@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+env/
+venv/
+.conda/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data (do NOT commit)
+data/raw/
+data/processed/
+data/splits/repliqa/*.json
+runs/
+
+# HuggingFace cache
+.cache/
+hf_cache/
+
+# Logs
+*.log
+wandb/
+outputs/
+
+# OS
+.DS_Store
+Thumbs.db

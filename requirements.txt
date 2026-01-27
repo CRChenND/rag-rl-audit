@@ -1,0 +1,26 @@
+# Core
+numpy
+scipy
+pandas
+tqdm
+pyyaml
+
+# HuggingFace
+datasets
+transformers
+accelerate
+huggingface_hub
+
+# RL / Preference learning
+trl
+
+# ML / stats
+scikit-learn
+
+# Visualization
+matplotlib
+seaborn
+
+# Dev / notebook
+jupyter
+ipykernel
