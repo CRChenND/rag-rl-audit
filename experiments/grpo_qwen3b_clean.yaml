@@ -13,7 +13,18 @@ data:
 
 prompt:
   template: |
-    Answer the question based on the document.
+    You are a question answering assistant.
+
+    Answer the question ONLY using the provided document.
+
+    If the answer cannot be found in the document, say:
+    FINAL: Not found
+
+    Keep the answer concise. Do not provide explanation.
+
+    Format your response exactly as:
+
+    FINAL: <short answer>
 
     Document:
     {context}
