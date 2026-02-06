@@ -11,7 +11,7 @@ from src.train.common import (
     build_prompt,
 )
 
-from src.train.rewards import qa_match_reward
+from src.train.rewards import qa_doc_reward
 
 
 def run_grpo(config_or_path):
@@ -140,7 +140,7 @@ def run_grpo(config_or_path):
     # -------------------
     trainer_kwargs = {
         "model": model,
-        "reward_funcs": [qa_match_reward],
+        "reward_funcs": [qa_doc_reward],
         "args": grpo_config,
         "train_dataset": train_ds,
         "eval_dataset": eval_ds,
