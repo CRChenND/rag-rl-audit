@@ -31,6 +31,8 @@ def run_grpo(config_or_path):
 
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
+    if tokenizer.eos_token_id is None:
+        raise ValueError("Tokenizer has no eos_token_id. Please set eos token in tokenizer/model config.")
 
     # -------------------
     # Load model
@@ -41,6 +43,11 @@ def run_grpo(config_or_path):
         torch_dtype="auto",
         device_map="auto"
     )
+    model.config.eos_token_id = tokenizer.eos_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
+    if getattr(model, "generation_config", None) is not None:
+        model.generation_config.eos_token_id = tokenizer.eos_token_id
+        model.generation_config.pad_token_id = tokenizer.pad_token_id
 
     if cfg["model"].get("use_lora", False):
         if "lora" not in cfg:
@@ -125,14 +132,23 @@ def run_grpo(config_or_path):
             f"num_generations={num_generations})."
         )
 
+    grpo_config_kwargs = {
+        "output_dir": train_cfg["output_dir"],
+        "per_device_train_batch_size": per_device_train_batch_size,
+        "generation_batch_size": generation_batch_size,
+        "num_train_epochs": train_cfg["num_train_epochs"],
+        "learning_rate": float(train_cfg["learning_rate"]),
+        "max_completion_length": train_cfg["max_completion_length"],
+        "num_generations": num_generations,
+    }
+    grpo_config_params = inspect.signature(GRPOConfig.__init__).parameters
+    if "eos_token_id" in grpo_config_params:
+        grpo_config_kwargs["eos_token_id"] = tokenizer.eos_token_id
+    if "pad_token_id" in grpo_config_params:
+        grpo_config_kwargs["pad_token_id"] = tokenizer.pad_token_id
+
     grpo_config = GRPOConfig(
-        output_dir=train_cfg["output_dir"],
-        per_device_train_batch_size=per_device_train_batch_size,
-        generation_batch_size=generation_batch_size,
-        num_train_epochs=train_cfg["num_train_epochs"],
-        learning_rate=float(train_cfg["learning_rate"]),
-        max_completion_length=train_cfg["max_completion_length"],
-        num_generations=num_generations,
+        **grpo_config_kwargs,
     )
 
     # -------------------
