@@ -134,8 +134,13 @@ def main() -> None:
         run_grpo(cfg)
         return
 
+    if algorithm == "ppo":
+        from src.train.ppo_pipeline import run_ppo
+        run_ppo(cfg)
+        return
+
     raise ValueError(
-        f"Unsupported algorithm '{algorithm}'. Implemented: grpo"
+        f"Unsupported algorithm '{algorithm}'. Implemented: grpo, ppo"
     )
 
 
