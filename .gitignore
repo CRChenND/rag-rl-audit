@@ -18,6 +18,12 @@ venv/
 # Data (do NOT commit)
 data/repliqa/
 runs/
+!runs/
+runs/*
+!runs/*/
+runs/*/*
+!runs/*/merged/
+!runs/*/merged/**
 
 # HuggingFace cache
 .cache/
