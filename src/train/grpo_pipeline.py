@@ -88,14 +88,43 @@ def run_grpo(config_or_path):
     # -------------------
     # TRL config
     # -------------------
+    train_cfg = cfg["training"]
+    per_device_train_batch_size = int(train_cfg["per_device_train_batch_size"])
+    num_generations = int(train_cfg["num_generations"])
+    generation_batch_size = train_cfg.get("generation_batch_size")
+
+    if generation_batch_size is None:
+        # TRL requires generation_batch_size % num_generations == 0.
+        # Pick the smallest valid value that is >= per-device train batch size.
+        generation_batch_size = (
+            ((per_device_train_batch_size + num_generations - 1) // num_generations)
+            * num_generations
+        )
+    else:
+        generation_batch_size = int(generation_batch_size)
+
+    if generation_batch_size % num_generations != 0:
+        raise ValueError(
+            "training.generation_batch_size must be divisible by training.num_generations. "
+            f"Got generation_batch_size={generation_batch_size}, num_generations={num_generations}."
+        )
+
+    if generation_batch_size != per_device_train_batch_size:
+        print(
+            "[grpo] Using generation_batch_size="
+            f"{generation_batch_size} (per_device_train_batch_size={per_device_train_batch_size}, "
+            f"num_generations={num_generations})."
+        )
+
     grpo_config = GRPOConfig(
-        output_dir=cfg["training"]["output_dir"],
-        per_device_train_batch_size=cfg["training"]["per_device_train_batch_size"],
-        num_train_epochs=cfg["training"]["num_train_epochs"],
-        learning_rate=float(cfg["training"]["learning_rate"]),
-        max_prompt_length=cfg["training"]["max_prompt_length"],
-        max_completion_length=cfg["training"]["max_completion_length"],
-        num_generations=cfg["training"]["num_generations"],
+        output_dir=train_cfg["output_dir"],
+        per_device_train_batch_size=per_device_train_batch_size,
+        generation_batch_size=generation_batch_size,
+        num_train_epochs=train_cfg["num_train_epochs"],
+        learning_rate=float(train_cfg["learning_rate"]),
+        max_prompt_length=train_cfg["max_prompt_length"],
+        max_completion_length=train_cfg["max_completion_length"],
+        num_generations=num_generations,
     )
 
     # -------------------
