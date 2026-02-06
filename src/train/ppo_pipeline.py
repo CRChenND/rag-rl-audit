@@ -86,14 +86,27 @@ def run_ppo(config_or_path):
         torch_dtype="auto",
     )
 
-    if reward_cfg.get("freeze", True):
+    if reward_cfg.get("freeze", False):
         for p in reward_model.parameters():
             p.requires_grad = False
         reward_model.eval()
+    elif reward_cfg.get("use_lora", True):
+        reward_lora_cfg = reward_cfg.get("lora", cfg.get("lora", {}))
+        if not reward_lora_cfg:
+            raise ValueError("reward_model.use_lora=true but no LoRA config found.")
+        reward_lora = LoraConfig(
+            r=reward_lora_cfg["r"],
+            lora_alpha=reward_lora_cfg["alpha"],
+            target_modules=reward_lora_cfg["target_modules"],
+            lora_dropout=reward_lora_cfg["dropout"],
+            bias="none",
+            task_type="SEQ_CLS",
+        )
+        reward_model = get_peft_model(reward_model, reward_lora)
 
     # PPO updates value model every step. Freezing the backbone drastically
     # reduces optimizer/activation memory while still training the score head.
-    if value_cfg.get("freeze_backbone", True):
+    if value_cfg.get("freeze_backbone", False):
         backbone = getattr(value_model, value_model.base_model_prefix, None)
         if backbone is not None:
             for p in backbone.parameters():
@@ -101,6 +114,19 @@ def run_ppo(config_or_path):
         if hasattr(value_model, "score"):
             for p in value_model.score.parameters():
                 p.requires_grad = True
+    elif value_cfg.get("use_lora", True):
+        value_lora_cfg = value_cfg.get("lora", cfg.get("lora", {}))
+        if not value_lora_cfg:
+            raise ValueError("value_model.use_lora=true but no LoRA config found.")
+        value_lora = LoraConfig(
+            r=value_lora_cfg["r"],
+            lora_alpha=value_lora_cfg["alpha"],
+            target_modules=value_lora_cfg["target_modules"],
+            lora_dropout=value_lora_cfg["dropout"],
+            bias="none",
+            task_type="SEQ_CLS",
+        )
+        value_model = get_peft_model(value_model, value_lora)
 
     for module in (reward_model, value_model):
         module.config.eos_token_id = tokenizer.eos_token_id
@@ -111,6 +137,12 @@ def run_ppo(config_or_path):
 
     value_trainable = sum(p.numel() for p in value_model.parameters() if p.requires_grad)
     value_total = sum(p.numel() for p in value_model.parameters())
+    reward_trainable = sum(p.numel() for p in reward_model.parameters() if p.requires_grad)
+    reward_total = sum(p.numel() for p in reward_model.parameters())
+    print(
+        f"[ppo] reward_model trainable params: {reward_trainable} / {reward_total} "
+        f"({100.0 * reward_trainable / max(1, reward_total):.4f}%)"
+    )
     print(
         f"[ppo] value_model trainable params: {value_trainable} / {value_total} "
         f"({100.0 * value_trainable / max(1, value_total):.4f}%)"

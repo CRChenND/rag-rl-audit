@@ -48,11 +48,13 @@ training:
 
 reward_model:
   model_name: Qwen/Qwen2.5-0.5B-Instruct
-  freeze: true
+  freeze: false
+  use_lora: true
 
 value_model:
   model_name: Qwen/Qwen2.5-0.5B-Instruct
-  freeze_backbone: true
+  freeze_backbone: false
+  use_lora: true
 
 lora:
   r: 16
