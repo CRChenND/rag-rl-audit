@@ -148,6 +148,11 @@ By default this saves:
 - merged model in `runs/reward_qwen05b_clean/merged`
 - diagnostics in `runs/reward_qwen05b_clean/reward_diagnostics.json` (pairwise accuracy, margin stats, reward-length correlation, fixed-dev stability)
 
+To reduce over-confident reward models, `configs/train/reward.yaml` enables:
+- early stopping (`early_stopping.enabled`)
+- margin regularization + reward clamp regularization (`reward_regularization`)
+- lower RM LR and conservative LoRA target modules
+
 Set PPO reward model to the trained RM path (recommended):
 
 ```yaml

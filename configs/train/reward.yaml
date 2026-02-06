@@ -56,17 +56,31 @@ training:
   per_device_train_batch_size: 2
   per_device_eval_batch_size: 2
   num_train_epochs: 1
-  learning_rate: 5e-6
+  learning_rate: 2e-6
   max_length: 1024
   logging_steps: 10
   eval_strategy: steps
-  eval_steps: 200
-  save_steps: 200
+  eval_steps: 100
+  save_steps: 100
   gradient_checkpointing: true
   dataset_num_proc: 1
   center_rewards_coefficient: 0.01
   report_to: none
   merge_lora_on_save: true
+  load_best_model_at_end: true
+  metric_for_best_model: eval_loss
+  greater_is_better: false
+
+early_stopping:
+  enabled: true
+  patience: 2
+  threshold: 0.0
+
+reward_regularization:
+  margin_target: 1.0
+  margin_weight: 0.05
+  max_abs_reward: 6.0
+  reward_clamp_weight: 0.02
 
 model:
   model_name: Qwen/Qwen2.5-0.5B-Instruct
@@ -80,4 +94,3 @@ lora:
   dropout: 0.05
   target_modules:
     - q_proj
-    - v_proj

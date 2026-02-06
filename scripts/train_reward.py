@@ -11,6 +11,10 @@ from peft import LoraConfig
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from trl import RewardConfig, RewardTrainer
+try:
+    from transformers import EarlyStoppingCallback
+except ImportError:
+    EarlyStoppingCallback = None
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -25,6 +29,71 @@ def _to_bool(v, default=False):
     if v is None:
         return default
     return bool(v)
+
+
+class RegularizedRewardTrainer(RewardTrainer):
+    def __init__(self, *args, regularization_cfg: dict | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        reg_cfg = regularization_cfg or {}
+        self.margin_target = float(reg_cfg.get("margin_target", 1.0))
+        self.margin_weight = float(reg_cfg.get("margin_weight", 0.0))
+        self.max_abs_reward = float(reg_cfg.get("max_abs_reward", 8.0))
+        self.reward_clamp_weight = float(reg_cfg.get("reward_clamp_weight", 0.0))
+        self._warned_missing_rewards = False
+
+    @staticmethod
+    def _get_from_outputs(outputs, key: str):
+        if isinstance(outputs, dict):
+            return outputs.get(key)
+        return getattr(outputs, key, None)
+
+    def _extract_rewards(self, outputs):
+        candidate_pairs = [
+            ("rewards_chosen", "rewards_rejected"),
+            ("chosen_rewards", "rejected_rewards"),
+            ("chosen_logits", "rejected_logits"),
+            ("logits_chosen", "logits_rejected"),
+        ]
+        for left_key, right_key in candidate_pairs:
+            left = self._get_from_outputs(outputs, left_key)
+            right = self._get_from_outputs(outputs, right_key)
+            if left is not None and right is not None:
+                return left.float(), right.float()
+        return None, None
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        kwargs = {"return_outputs": True}
+        if "num_items_in_batch" in inspect.signature(super().compute_loss).parameters:
+            kwargs["num_items_in_batch"] = num_items_in_batch
+        base = super().compute_loss(model, inputs, **kwargs)
+        if isinstance(base, tuple):
+            loss, outputs = base
+        else:
+            loss, outputs = base, {}
+
+        chosen_reward, rejected_reward = self._extract_rewards(outputs)
+        if chosen_reward is None or rejected_reward is None:
+            if not self._warned_missing_rewards and (self.margin_weight > 0 or self.reward_clamp_weight > 0):
+                self._warned_missing_rewards = True
+                print(
+                    "[reward_regularization] could not find chosen/rejected rewards in trainer outputs; "
+                    "margin/clamp regularization skipped."
+                )
+            return (loss, outputs) if return_outputs else loss
+
+        reg = 0.0
+        if self.margin_weight > 0.0:
+            margin = chosen_reward - rejected_reward
+            margin_deficit = torch.relu(self.margin_target - margin)
+            reg = reg + self.margin_weight * torch.mean(margin_deficit.pow(2))
+
+        if self.reward_clamp_weight > 0.0:
+            all_rewards = torch.cat([chosen_reward, rejected_reward], dim=0)
+            overflow = torch.relu(torch.abs(all_rewards) - self.max_abs_reward)
+            reg = reg + self.reward_clamp_weight * torch.mean(overflow.pow(2))
+
+        total_loss = loss + reg
+        return (total_loss, outputs) if return_outputs else total_loss
 
 
 def _join_prompt_response(prompt: str, response: str) -> str:
@@ -317,6 +386,9 @@ def run_reward_training(cfg: dict) -> None:
         "dataset_num_proc": int(train_cfg.get("dataset_num_proc", 1)),
         "center_rewards_coefficient": train_cfg.get("center_rewards_coefficient", 0.0),
         "remove_unused_columns": False,
+        "load_best_model_at_end": _to_bool(train_cfg.get("load_best_model_at_end"), default=True),
+        "metric_for_best_model": str(train_cfg.get("metric_for_best_model", "eval_loss")),
+        "greater_is_better": _to_bool(train_cfg.get("greater_is_better"), default=False),
         "model_init_kwargs": {
             "trust_remote_code": True,
             "torch_dtype": "auto",
@@ -360,14 +432,25 @@ def run_reward_training(cfg: dict) -> None:
             modules_to_save=modules_to_save,
         )
 
-    trainer = RewardTrainer(
+    trainer = RegularizedRewardTrainer(
         model=reward_model,
         args=reward_config,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         processing_class=tokenizer,
         peft_config=peft_config,
+        regularization_cfg=cfg.get("reward_regularization", {}),
     )
+    early_stop_cfg = cfg.get("early_stopping", {})
+    if _to_bool(early_stop_cfg.get("enabled"), default=True):
+        if EarlyStoppingCallback is None:
+            print("[early_stopping] transformers.EarlyStoppingCallback not available; skipping.")
+        else:
+            patience = int(early_stop_cfg.get("patience", 2))
+            threshold = float(early_stop_cfg.get("threshold", 0.0))
+            trainer.add_callback(EarlyStoppingCallback(early_stopping_patience=patience, early_stopping_threshold=threshold))
+            print(f"[early_stopping] enabled (patience={patience}, threshold={threshold})")
+
     trainer.train()
     trainer.save_model(train_cfg["output_dir"])
 
