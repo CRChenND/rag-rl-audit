@@ -1,4 +1,5 @@
 import yaml
+import inspect
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from trl import GRPOTrainer, GRPOConfig
 from peft import LoraConfig, get_peft_model
@@ -85,10 +86,18 @@ def run_grpo(config_or_path):
         lambda x: {"prompt": build_prompt(x, template)}
     )
 
+    train_cfg = cfg["training"]
+    max_prompt_length = train_cfg["max_prompt_length"]
+    train_ds = train_ds.filter(
+        lambda x: len(tokenizer(x["prompt"], add_special_tokens=False)["input_ids"]) <= max_prompt_length
+    )
+    eval_ds = eval_ds.filter(
+        lambda x: len(tokenizer(x["prompt"], add_special_tokens=False)["input_ids"]) <= max_prompt_length
+    )
+
     # -------------------
     # TRL config
     # -------------------
-    train_cfg = cfg["training"]
     per_device_train_batch_size = int(train_cfg["per_device_train_batch_size"])
     num_generations = int(train_cfg["num_generations"])
     generation_batch_size = train_cfg.get("generation_batch_size")
@@ -122,7 +131,6 @@ def run_grpo(config_or_path):
         generation_batch_size=generation_batch_size,
         num_train_epochs=train_cfg["num_train_epochs"],
         learning_rate=float(train_cfg["learning_rate"]),
-        max_prompt_length=train_cfg["max_prompt_length"],
         max_completion_length=train_cfg["max_completion_length"],
         num_generations=num_generations,
     )
@@ -130,13 +138,19 @@ def run_grpo(config_or_path):
     # -------------------
     # Trainer
     # -------------------
-    trainer = GRPOTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        reward_funcs=[qa_match_reward],
-        args=grpo_config,
-        train_dataset=train_ds,
-        eval_dataset=eval_ds,
-    )
+    trainer_kwargs = {
+        "model": model,
+        "reward_funcs": [qa_match_reward],
+        "args": grpo_config,
+        "train_dataset": train_ds,
+        "eval_dataset": eval_ds,
+    }
+    trainer_init_params = inspect.signature(GRPOTrainer.__init__).parameters
+    if "tokenizer" in trainer_init_params:
+        trainer_kwargs["tokenizer"] = tokenizer
+    elif "processing_class" in trainer_init_params:
+        trainer_kwargs["processing_class"] = tokenizer
+
+    trainer = GRPOTrainer(**trainer_kwargs)
 
     trainer.train()
