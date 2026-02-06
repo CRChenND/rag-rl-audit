@@ -1,10 +1,14 @@
 import argparse
 import inspect
+import json
+import random
 from pathlib import Path
 import sys
 
 from datasets import load_dataset
+import numpy as np
 from peft import LoraConfig
+import torch
 from transformers import AutoTokenizer
 from trl import RewardConfig, RewardTrainer
 
@@ -20,6 +24,211 @@ def _to_bool(v, default=False):
     if v is None:
         return default
     return bool(v)
+
+
+def _join_prompt_response(prompt: str, response: str) -> str:
+    return f"{prompt.rstrip()}\n{response.lstrip()}"
+
+
+def _get_model_device(model) -> torch.device:
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return torch.device("cpu")
+
+
+def _score_texts(model, tokenizer, texts, max_length: int, batch_size: int) -> list[float]:
+    device = _get_model_device(model)
+    scores: list[float] = []
+
+    model.eval()
+    with torch.no_grad():
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i : i + batch_size]
+            encoded = tokenizer(
+                batch_texts,
+                truncation=True,
+                max_length=max_length,
+                padding=True,
+                return_tensors="pt",
+            )
+            encoded = {k: v.to(device) for k, v in encoded.items()}
+            logits = model(**encoded).logits
+            if logits.ndim == 2:
+                batch_scores = logits[:, 0]
+            else:
+                batch_scores = logits
+            scores.extend(batch_scores.detach().cpu().float().tolist())
+
+    return scores
+
+
+def _token_lengths(tokenizer, texts, batch_size: int) -> list[int]:
+    lengths: list[int] = []
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i : i + batch_size]
+        encoded = tokenizer(
+            batch_texts,
+            add_special_tokens=False,
+            truncation=False,
+        )
+        lengths.extend(len(ids) for ids in encoded["input_ids"])
+    return lengths
+
+
+def _pearson_corr(x: np.ndarray, y: np.ndarray) -> float:
+    if len(x) < 2 or len(y) < 2:
+        return float("nan")
+    x_std = float(np.std(x))
+    y_std = float(np.std(y))
+    if x_std == 0.0 or y_std == 0.0:
+        return float("nan")
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+def _compute_pairwise_metrics(
+    model,
+    tokenizer,
+    prompts: list[str],
+    chosens: list[str],
+    rejecteds: list[str],
+    max_length: int,
+    batch_size: int,
+) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    chosen_texts = [_join_prompt_response(p, c) for p, c in zip(prompts, chosens)]
+    rejected_texts = [_join_prompt_response(p, r) for p, r in zip(prompts, rejecteds)]
+
+    chosen_scores = np.array(_score_texts(model, tokenizer, chosen_texts, max_length, batch_size), dtype=np.float64)
+    rejected_scores = np.array(_score_texts(model, tokenizer, rejected_texts, max_length, batch_size), dtype=np.float64)
+    margins = chosen_scores - rejected_scores
+
+    chosen_lens = np.array(_token_lengths(tokenizer, chosens, batch_size), dtype=np.float64)
+    rejected_lens = np.array(_token_lengths(tokenizer, rejecteds, batch_size), dtype=np.float64)
+
+    all_rewards = np.concatenate([chosen_scores, rejected_scores], axis=0)
+    all_lengths = np.concatenate([chosen_lens, rejected_lens], axis=0)
+
+    metrics = {
+        "num_pairs": int(len(margins)),
+        "pairwise_accuracy": float(np.mean(margins > 0.0)),
+        "tie_rate": float(np.mean(margins == 0.0)),
+        "margin_mean": float(np.mean(margins)),
+        "margin_variance": float(np.var(margins)),
+        "margin_std": float(np.std(margins)),
+        "chosen_reward_mean": float(np.mean(chosen_scores)),
+        "rejected_reward_mean": float(np.mean(rejected_scores)),
+        "reward_length_pearson": _pearson_corr(all_rewards, all_lengths),
+        "chosen_reward_length_pearson": _pearson_corr(chosen_scores, chosen_lens),
+        "rejected_reward_length_pearson": _pearson_corr(rejected_scores, rejected_lens),
+        "chosen_length_mean": float(np.mean(chosen_lens)),
+        "rejected_length_mean": float(np.mean(rejected_lens)),
+    }
+    return metrics, margins, chosen_scores, rejected_scores, chosen_lens
+
+
+def _bootstrap_stability(margins: np.ndarray, num_samples: int, seed: int) -> dict:
+    n = len(margins)
+    if n == 0 or num_samples <= 0:
+        return {
+            "bootstrap_samples": int(num_samples),
+            "pairwise_accuracy_std": float("nan"),
+            "pairwise_accuracy_ci95_low": float("nan"),
+            "pairwise_accuracy_ci95_high": float("nan"),
+            "margin_mean_std": float("nan"),
+            "margin_mean_ci95_low": float("nan"),
+            "margin_mean_ci95_high": float("nan"),
+        }
+
+    rng = np.random.default_rng(seed)
+    acc_values = np.zeros(num_samples, dtype=np.float64)
+    margin_mean_values = np.zeros(num_samples, dtype=np.float64)
+
+    for i in range(num_samples):
+        sample = margins[rng.integers(0, n, size=n)]
+        acc_values[i] = np.mean(sample > 0.0)
+        margin_mean_values[i] = np.mean(sample)
+
+    return {
+        "bootstrap_samples": int(num_samples),
+        "pairwise_accuracy_std": float(np.std(acc_values)),
+        "pairwise_accuracy_ci95_low": float(np.percentile(acc_values, 2.5)),
+        "pairwise_accuracy_ci95_high": float(np.percentile(acc_values, 97.5)),
+        "margin_mean_std": float(np.std(margin_mean_values)),
+        "margin_mean_ci95_low": float(np.percentile(margin_mean_values, 2.5)),
+        "margin_mean_ci95_high": float(np.percentile(margin_mean_values, 97.5)),
+    }
+
+
+def _run_reward_diagnostics(cfg: dict, train_cfg: dict, eval_ds, model, tokenizer) -> dict:
+    diag_cfg = cfg.get("reward_diagnostics", {})
+    enabled = _to_bool(diag_cfg.get("enabled"), default=True)
+    if not enabled:
+        return {"enabled": False}
+
+    batch_size = int(diag_cfg.get("batch_size", train_cfg.get("per_device_eval_batch_size", 2)))
+    max_length = int(diag_cfg.get("max_length", train_cfg.get("max_length", 1024)))
+    dev_size = int(diag_cfg.get("dev_size", 256))
+    dev_seed = int(diag_cfg.get("dev_seed", 42))
+    bootstrap_samples = int(diag_cfg.get("bootstrap_samples", 200))
+
+    num_rows = len(eval_ds)
+    if num_rows == 0:
+        return {"enabled": True, "num_eval_rows": 0, "error": "Empty eval set"}
+
+    prompts_all = list(eval_ds["prompt"])
+    chosen_all = list(eval_ds["chosen"])
+    rejected_all = list(eval_ds["rejected"])
+
+    overall_metrics, _, _, _, _ = _compute_pairwise_metrics(
+        model=model,
+        tokenizer=tokenizer,
+        prompts=prompts_all,
+        chosens=chosen_all,
+        rejecteds=rejected_all,
+        max_length=max_length,
+        batch_size=batch_size,
+    )
+
+    indices = list(range(num_rows))
+    random.Random(dev_seed).shuffle(indices)
+    use_dev_size = num_rows if dev_size <= 0 else min(dev_size, num_rows)
+    dev_indices = indices[:use_dev_size]
+
+    dev_prompts = [prompts_all[i] for i in dev_indices]
+    dev_chosen = [chosen_all[i] for i in dev_indices]
+    dev_rejected = [rejected_all[i] for i in dev_indices]
+
+    dev_metrics, dev_margins, chosen_scores, rejected_scores, chosen_lens = _compute_pairwise_metrics(
+        model=model,
+        tokenizer=tokenizer,
+        prompts=dev_prompts,
+        chosens=dev_chosen,
+        rejecteds=dev_rejected,
+        max_length=max_length,
+        batch_size=batch_size,
+    )
+    stability = _bootstrap_stability(dev_margins, num_samples=bootstrap_samples, seed=dev_seed)
+
+    return {
+        "enabled": True,
+        "num_eval_rows": int(num_rows),
+        "overall": overall_metrics,
+        "fixed_dev": {
+            "size": int(use_dev_size),
+            "seed": int(dev_seed),
+            "metrics": dev_metrics,
+            "stability": stability,
+            "score_preview": [
+                {
+                    "chosen_score": float(chosen_scores[i]),
+                    "rejected_score": float(rejected_scores[i]),
+                    "margin": float(dev_margins[i]),
+                    "chosen_length": int(chosen_lens[i]),
+                }
+                for i in range(min(5, len(dev_margins)))
+            ],
+        },
+    }
 
 
 def run_reward_training(cfg: dict) -> None:
@@ -98,12 +307,45 @@ def run_reward_training(cfg: dict) -> None:
     trainer.train()
     trainer.save_model(train_cfg["output_dir"])
 
+    diagnostics_model = trainer.model
     if peft_config is not None and _to_bool(train_cfg.get("merge_lora_on_save"), default=True):
         merged_path = str(Path(train_cfg["output_dir"]) / "merged")
         base_model = trainer.model.merge_and_unload()
         base_model.save_pretrained(merged_path)
         tokenizer.save_pretrained(merged_path)
+        diagnostics_model = base_model
         print(f"Saved merged reward model: {merged_path}")
+
+    diagnostics = _run_reward_diagnostics(
+        cfg=cfg,
+        train_cfg=train_cfg,
+        eval_ds=eval_ds,
+        model=diagnostics_model,
+        tokenizer=tokenizer,
+    )
+    diagnostics_path = Path(train_cfg["output_dir"]) / "reward_diagnostics.json"
+    diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+    diagnostics_path.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
+
+    if diagnostics.get("enabled", False):
+        overall = diagnostics.get("overall", {})
+        fixed_dev = diagnostics.get("fixed_dev", {})
+        fixed_dev_metrics = fixed_dev.get("metrics", {})
+        stability = fixed_dev.get("stability", {})
+        print(
+            "[reward_diagnostics] "
+            f"overall_pairwise_acc={overall.get('pairwise_accuracy', float('nan')):.4f}, "
+            f"overall_margin_mean={overall.get('margin_mean', float('nan')):.4f}, "
+            f"overall_reward_len_corr={overall.get('reward_length_pearson', float('nan')):.4f}"
+        )
+        print(
+            "[reward_diagnostics] "
+            f"fixed_dev_pairwise_acc={fixed_dev_metrics.get('pairwise_accuracy', float('nan')):.4f}, "
+            f"fixed_dev_margin_mean={fixed_dev_metrics.get('margin_mean', float('nan')):.4f}, "
+            f"fixed_dev_acc_ci95=[{stability.get('pairwise_accuracy_ci95_low', float('nan')):.4f}, "
+            f"{stability.get('pairwise_accuracy_ci95_high', float('nan')):.4f}]"
+        )
+    print(f"Saved reward diagnostics: {diagnostics_path}")
 
 
 def main() -> None:

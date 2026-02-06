@@ -140,6 +140,7 @@ By default this saves:
 
 - LoRA/checkpoints in `runs/reward_qwen05b_clean`
 - merged model in `runs/reward_qwen05b_clean/merged`
+- diagnostics in `runs/reward_qwen05b_clean/reward_diagnostics.json` (pairwise accuracy, margin stats, reward-length correlation, fixed-dev stability)
 
 Set PPO reward model to the trained RM path (recommended):
 
