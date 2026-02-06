@@ -28,23 +28,31 @@ prompt:
 
 training:
   output_dir: runs/ppo_baseline
-  per_device_train_batch_size: 2
-  per_device_eval_batch_size: 2
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
   gradient_accumulation_steps: 1
   num_train_epochs: 1
   learning_rate: 5e-6
-  max_prompt_length: 1024
-  max_completion_length: 128
+  max_prompt_length: 512
+  max_completion_length: 64
   num_mini_batches: 1
   num_ppo_epochs: 4
   temperature: 1.0
   kl_coef: 0.05
   gamma: 1.0
   lam: 0.95
-  local_rollout_forward_batch_size: 2
+  local_rollout_forward_batch_size: 1
   stop_token: eos
   missing_eos_penalty: 1.0
   report_to: none
+
+reward_model:
+  model_name: Qwen/Qwen2.5-0.5B-Instruct
+  freeze: true
+
+value_model:
+  model_name: Qwen/Qwen2.5-0.5B-Instruct
+  freeze_backbone: true
 
 lora:
   r: 16

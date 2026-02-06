@@ -67,8 +67,10 @@ def run_ppo(config_or_path):
         policy_model = get_peft_model(policy_model, lora_config)
         policy_model.print_trainable_parameters()
 
-    reward_model_name = cfg.get("reward_model", {}).get("model_name", model_cfg["model_name"])
-    value_model_name = cfg.get("value_model", {}).get("model_name", model_cfg["model_name"])
+    reward_cfg = cfg.get("reward_model", {})
+    value_cfg = cfg.get("value_model", {})
+    reward_model_name = reward_cfg.get("model_name", model_cfg["model_name"])
+    value_model_name = value_cfg.get("model_name", model_cfg["model_name"])
 
     # PPO in TRL 0.27 expects reward/value models with a `.score` head.
     reward_model = AutoModelForSequenceClassification.from_pretrained(
@@ -84,12 +86,35 @@ def run_ppo(config_or_path):
         torch_dtype="auto",
     )
 
+    if reward_cfg.get("freeze", True):
+        for p in reward_model.parameters():
+            p.requires_grad = False
+        reward_model.eval()
+
+    # PPO updates value model every step. Freezing the backbone drastically
+    # reduces optimizer/activation memory while still training the score head.
+    if value_cfg.get("freeze_backbone", True):
+        backbone = getattr(value_model, value_model.base_model_prefix, None)
+        if backbone is not None:
+            for p in backbone.parameters():
+                p.requires_grad = False
+        if hasattr(value_model, "score"):
+            for p in value_model.score.parameters():
+                p.requires_grad = True
+
     for module in (reward_model, value_model):
         module.config.eos_token_id = tokenizer.eos_token_id
         module.config.pad_token_id = tokenizer.pad_token_id
         if getattr(module, "generation_config", None) is not None:
             module.generation_config.eos_token_id = tokenizer.eos_token_id
             module.generation_config.pad_token_id = tokenizer.pad_token_id
+
+    value_trainable = sum(p.numel() for p in value_model.parameters() if p.requires_grad)
+    value_total = sum(p.numel() for p in value_model.parameters())
+    print(
+        f"[ppo] value_model trainable params: {value_trainable} / {value_total} "
+        f"({100.0 * value_trainable / max(1, value_total):.4f}%)"
+    )
 
     train_pairs = load_jsonl(cfg["data"]["train_path"])
     eval_pairs = load_jsonl(cfg["data"]["eval_path"])
