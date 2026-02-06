@@ -9,7 +9,7 @@ from datasets import load_dataset
 import numpy as np
 from peft import LoraConfig
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from trl import RewardConfig, RewardTrainer
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.build_reward_data import build_reward_datasets
 from scripts.train import load_config
+from src.train.reward_postprocess import apply_reward_postprocess_numpy, normalize_reward_postprocess_cfg
 
 
 def _to_bool(v, default=False):
@@ -28,6 +29,19 @@ def _to_bool(v, default=False):
 
 def _join_prompt_response(prompt: str, response: str) -> str:
     return f"{prompt.rstrip()}\n{response.lstrip()}"
+
+
+def _infer_seqcls_head_modules(model) -> list[str]:
+    preferred = ("score", "classifier", "v_head")
+    module_names = [name for name, _ in model.named_modules()]
+    inferred = []
+    for base_name in preferred:
+        exact = [name for name in module_names if name == base_name]
+        suffix = [name for name in module_names if name.endswith(f".{base_name}")]
+        candidates = exact or suffix
+        if candidates:
+            inferred.append(sorted(candidates, key=len)[0])
+    return inferred
 
 
 def _get_model_device(model) -> torch.device:
@@ -86,6 +100,13 @@ def _pearson_corr(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.corrcoef(x, y)[0, 1])
 
 
+def _histogram(values: np.ndarray, bins: int = 20) -> dict:
+    if len(values) == 0:
+        return {"bins": [], "counts": []}
+    counts, edges = np.histogram(values, bins=bins)
+    return {"bins": [float(v) for v in edges.tolist()], "counts": [int(v) for v in counts.tolist()]}
+
+
 def _compute_pairwise_metrics(
     model,
     tokenizer,
@@ -94,19 +115,29 @@ def _compute_pairwise_metrics(
     rejecteds: list[str],
     max_length: int,
     batch_size: int,
+    postprocess_cfg: dict | None = None,
 ) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     chosen_texts = [_join_prompt_response(p, c) for p, c in zip(prompts, chosens)]
     rejected_texts = [_join_prompt_response(p, r) for p, r in zip(prompts, rejecteds)]
 
     chosen_scores = np.array(_score_texts(model, tokenizer, chosen_texts, max_length, batch_size), dtype=np.float64)
     rejected_scores = np.array(_score_texts(model, tokenizer, rejected_texts, max_length, batch_size), dtype=np.float64)
+    if postprocess_cfg:
+        all_scores = np.concatenate([chosen_scores, rejected_scores], axis=0)
+        all_scores = apply_reward_postprocess_numpy(all_scores, postprocess_cfg)
+        split = len(chosen_scores)
+        chosen_scores = all_scores[:split]
+        rejected_scores = all_scores[split:]
     margins = chosen_scores - rejected_scores
 
-    chosen_lens = np.array(_token_lengths(tokenizer, chosens, batch_size), dtype=np.float64)
-    rejected_lens = np.array(_token_lengths(tokenizer, rejecteds, batch_size), dtype=np.float64)
+    chosen_resp_lens = np.array(_token_lengths(tokenizer, chosens, batch_size), dtype=np.float64)
+    rejected_resp_lens = np.array(_token_lengths(tokenizer, rejecteds, batch_size), dtype=np.float64)
+    chosen_total_lens = np.array(_token_lengths(tokenizer, chosen_texts, batch_size), dtype=np.float64)
+    rejected_total_lens = np.array(_token_lengths(tokenizer, rejected_texts, batch_size), dtype=np.float64)
 
     all_rewards = np.concatenate([chosen_scores, rejected_scores], axis=0)
-    all_lengths = np.concatenate([chosen_lens, rejected_lens], axis=0)
+    all_total_lengths = np.concatenate([chosen_total_lens, rejected_total_lens], axis=0)
+    all_resp_lengths = np.concatenate([chosen_resp_lens, rejected_resp_lens], axis=0)
 
     metrics = {
         "num_pairs": int(len(margins)),
@@ -117,13 +148,20 @@ def _compute_pairwise_metrics(
         "margin_std": float(np.std(margins)),
         "chosen_reward_mean": float(np.mean(chosen_scores)),
         "rejected_reward_mean": float(np.mean(rejected_scores)),
-        "reward_length_pearson": _pearson_corr(all_rewards, all_lengths),
-        "chosen_reward_length_pearson": _pearson_corr(chosen_scores, chosen_lens),
-        "rejected_reward_length_pearson": _pearson_corr(rejected_scores, rejected_lens),
-        "chosen_length_mean": float(np.mean(chosen_lens)),
-        "rejected_length_mean": float(np.mean(rejected_lens)),
+        "reward_total_length_pearson": _pearson_corr(all_rewards, all_total_lengths),
+        "reward_response_length_pearson": _pearson_corr(all_rewards, all_resp_lengths),
+        "chosen_reward_total_length_pearson": _pearson_corr(chosen_scores, chosen_total_lens),
+        "rejected_reward_total_length_pearson": _pearson_corr(rejected_scores, rejected_total_lens),
+        "chosen_total_length_mean": float(np.mean(chosen_total_lens)),
+        "rejected_total_length_mean": float(np.mean(rejected_total_lens)),
+        "chosen_response_length_mean": float(np.mean(chosen_resp_lens)),
+        "rejected_response_length_mean": float(np.mean(rejected_resp_lens)),
+        "chosen_reward_histogram": _histogram(chosen_scores, bins=20),
+        "rejected_reward_histogram": _histogram(rejected_scores, bins=20),
+        "reward_histogram": _histogram(all_rewards, bins=20),
+        "margin_histogram": _histogram(margins, bins=20),
     }
-    return metrics, margins, chosen_scores, rejected_scores, chosen_lens
+    return metrics, margins, chosen_scores, rejected_scores, chosen_total_lens
 
 
 def _bootstrap_stability(margins: np.ndarray, num_samples: int, seed: int) -> dict:
@@ -170,6 +208,8 @@ def _run_reward_diagnostics(cfg: dict, train_cfg: dict, eval_ds, model, tokenize
     dev_size = int(diag_cfg.get("dev_size", 256))
     dev_seed = int(diag_cfg.get("dev_seed", 42))
     bootstrap_samples = int(diag_cfg.get("bootstrap_samples", 200))
+    postprocess_cfg = normalize_reward_postprocess_cfg(diag_cfg.get("postprocess", cfg.get("reward_postprocess", {})))
+    ppo_postprocess_cfg = normalize_reward_postprocess_cfg(cfg.get("reward_postprocess", {}))
 
     num_rows = len(eval_ds)
     if num_rows == 0:
@@ -187,6 +227,7 @@ def _run_reward_diagnostics(cfg: dict, train_cfg: dict, eval_ds, model, tokenize
         rejecteds=rejected_all,
         max_length=max_length,
         batch_size=batch_size,
+        postprocess_cfg=postprocess_cfg,
     )
 
     indices = list(range(num_rows))
@@ -206,13 +247,23 @@ def _run_reward_diagnostics(cfg: dict, train_cfg: dict, eval_ds, model, tokenize
         rejecteds=dev_rejected,
         max_length=max_length,
         batch_size=batch_size,
+        postprocess_cfg=postprocess_cfg,
     )
     stability = _bootstrap_stability(dev_margins, num_samples=bootstrap_samples, seed=dev_seed)
+
+    warnings = []
+    if postprocess_cfg != ppo_postprocess_cfg and ppo_postprocess_cfg:
+        warnings.append(
+            "diagnostics.postprocess differs from reward_postprocess used by PPO; "
+            "metrics may not match online PPO reward scale."
+        )
 
     return {
         "enabled": True,
         "num_eval_rows": int(num_rows),
         "overall": overall_metrics,
+        "postprocess": postprocess_cfg,
+        "warnings": warnings,
         "fixed_dev": {
             "size": int(use_dev_size),
             "seed": int(dev_seed),
@@ -223,7 +274,7 @@ def _run_reward_diagnostics(cfg: dict, train_cfg: dict, eval_ds, model, tokenize
                     "chosen_score": float(chosen_scores[i]),
                     "rejected_score": float(rejected_scores[i]),
                     "margin": float(dev_margins[i]),
-                    "chosen_length": int(chosen_lens[i]),
+                    "chosen_total_length": int(chosen_lens[i]),
                 }
                 for i in range(min(5, len(dev_margins)))
             ],
@@ -240,6 +291,8 @@ def run_reward_training(cfg: dict) -> None:
 
     reward_model_name = cfg.get("reward_model", {}).get("model_name", model_cfg["model_name"])
     tokenizer = AutoTokenizer.from_pretrained(reward_model_name, trust_remote_code=True)
+    tokenizer.truncation_side = str(model_cfg.get("truncation_side", "left"))
+    tokenizer.padding_side = str(model_cfg.get("padding_side", "right"))
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -281,11 +334,22 @@ def run_reward_training(cfg: dict) -> None:
     reward_kwargs = {k: v for k, v in reward_kwargs.items() if k in reward_config_params}
     reward_config = RewardConfig(**reward_kwargs)
 
+    reward_model = AutoModelForSequenceClassification.from_pretrained(
+        reward_model_name,
+        trust_remote_code=True,
+        torch_dtype="auto",
+        num_labels=1,
+    )
+
     peft_config = None
     if model_cfg.get("use_lora", False):
         lora_cfg = cfg.get("reward_model", {}).get("lora", cfg.get("lora", {}))
         if not lora_cfg:
             raise ValueError("model.use_lora=true but no LoRA config found in reward_model.lora or lora.")
+        modules_to_save = lora_cfg.get("modules_to_save") or _infer_seqcls_head_modules(reward_model)
+        if not modules_to_save:
+            raise ValueError("Could not infer reward head modules for LoRA. Set reward_model.lora.modules_to_save.")
+        print(f"[reward] modules_to_save={modules_to_save}")
         peft_config = LoraConfig(
             r=lora_cfg["r"],
             lora_alpha=lora_cfg["alpha"],
@@ -293,11 +357,11 @@ def run_reward_training(cfg: dict) -> None:
             lora_dropout=lora_cfg["dropout"],
             bias="none",
             task_type="SEQ_CLS",
-            modules_to_save=["score"],
+            modules_to_save=modules_to_save,
         )
 
     trainer = RewardTrainer(
-        model=reward_model_name,
+        model=reward_model,
         args=reward_config,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
@@ -336,7 +400,7 @@ def run_reward_training(cfg: dict) -> None:
             "[reward_diagnostics] "
             f"overall_pairwise_acc={overall.get('pairwise_accuracy', float('nan')):.4f}, "
             f"overall_margin_mean={overall.get('margin_mean', float('nan')):.4f}, "
-            f"overall_reward_len_corr={overall.get('reward_length_pearson', float('nan')):.4f}"
+            f"overall_reward_total_len_corr={overall.get('reward_total_length_pearson', float('nan')):.4f}"
         )
         print(
             "[reward_diagnostics] "

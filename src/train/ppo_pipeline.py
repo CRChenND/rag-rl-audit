@@ -1,6 +1,8 @@
 import inspect
 import warnings
 
+import torch
+from torch import nn
 import yaml
 from transformers import (
     AutoModelForCausalLM,
@@ -20,6 +22,135 @@ from src.train.common import (
     load_document_store,
     load_jsonl,
 )
+from src.train.reward_postprocess import (
+    apply_length_penalty_torch,
+    apply_squash_clip_torch,
+    normalize_reward_postprocess_cfg,
+)
+
+
+def _infer_seqcls_head_modules(model) -> list[str]:
+    preferred = ("score", "classifier", "v_head")
+    module_names = [name for name, _ in model.named_modules()]
+    inferred = []
+    for base_name in preferred:
+        exact = [name for name in module_names if name == base_name]
+        suffix = [name for name in module_names if name.endswith(f".{base_name}")]
+        candidates = exact or suffix
+        if candidates:
+            inferred.append(sorted(candidates, key=len)[0])
+    return inferred
+
+
+class RewardPostProcessWrapper(nn.Module):
+    def __init__(self, base_model, cfg: dict):
+        super().__init__()
+        self.base_model = base_model
+        self.cfg = normalize_reward_postprocess_cfg(cfg)
+        self.enabled = self.cfg["enabled"]
+        self.temperature = self.cfg["temperature"]
+        self.normalize = self.cfg["normalize"]
+        self.apply_tanh = self.cfg["apply_tanh"]
+        self.clip_min = self.cfg["clip_min"]
+        self.clip_max = self.cfg["clip_max"]
+        self.eps = self.cfg["eps"]
+        self.running_momentum = self.cfg["running_momentum"]
+        self.length_penalty = self.cfg["length_penalty"]
+        self.length_penalty_mode = self.cfg["length_penalty_mode"]
+        self.length_penalty_scale = self.cfg["length_penalty_scale"]
+        self.update_stats_in_eval = self.cfg["update_stats_in_eval"]
+        self.min_count_for_running = self.cfg["min_count_for_running"]
+
+        self.register_buffer("running_mean", torch.zeros(1, dtype=torch.float32), persistent=False)
+        self.register_buffer("running_var", torch.ones(1, dtype=torch.float32), persistent=False)
+        self.register_buffer("running_inited", torch.zeros(1, dtype=torch.bool), persistent=False)
+        self.register_buffer("running_count", torch.zeros(1, dtype=torch.long), persistent=False)
+
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.base_model, name)
+
+    def _extract_response_lengths(self, kwargs):
+        attention_mask = kwargs.get("attention_mask")
+        response_mask = kwargs.get("response_mask")
+        if self.length_penalty_mode == "response_tokens" and response_mask is not None:
+            return response_mask.float().sum(dim=-1, keepdim=True)
+        if attention_mask is not None:
+            return attention_mask.float().sum(dim=-1, keepdim=True)
+        if response_mask is not None:
+            return response_mask.float().sum(dim=-1, keepdim=True)
+        return None
+
+    def _apply(self, logits, kwargs):
+        logits = logits / self.temperature
+        if self.normalize == "batch_zscore":
+            mean = logits.mean()
+            std = logits.std(unbiased=False)
+            logits = (logits - mean) / (std + self.eps)
+        elif self.normalize == "running_zscore":
+            batch_mean = logits.mean().detach()
+            batch_var = logits.var(unbiased=False).detach()
+            should_update = self.training or self.update_stats_in_eval
+            if should_update:
+                self.running_count.add_(logits.numel())
+                if not bool(self.running_inited.item()):
+                    self.running_mean.copy_(batch_mean.reshape_as(self.running_mean))
+                    self.running_var.copy_(batch_var.reshape_as(self.running_var))
+                    self.running_inited.fill_(True)
+                else:
+                    m = self.running_momentum
+                    self.running_mean.mul_(m).add_(batch_mean * (1.0 - m))
+                    self.running_var.mul_(m).add_(batch_var * (1.0 - m))
+            if bool(self.running_inited.item()) and int(self.running_count.item()) >= self.min_count_for_running:
+                std = torch.sqrt(self.running_var.clamp_min(self.eps))
+                logits = (logits - self.running_mean) / std
+            else:
+                # Warm-up: avoid unstable early-step EMA by using current batch stats.
+                mean = logits.mean()
+                std = logits.std(unbiased=False)
+                logits = (logits - mean) / (std + self.eps)
+
+        if self.length_penalty != 0.0:
+            lengths = self._extract_response_lengths(kwargs)
+            logits = apply_length_penalty_torch(logits, lengths, self.cfg)
+
+        logits = apply_squash_clip_torch(logits, self.cfg)
+        return logits
+
+    def forward(self, *args, **kwargs):
+        outputs = self.base_model(*args, **kwargs)
+        if not self.enabled:
+            return outputs
+        logits = outputs.logits
+        logits = self._apply(logits, kwargs)
+        try:
+            outputs.logits = logits
+        except Exception:
+            if hasattr(outputs, "to_tuple"):
+                # Conservative fallback for tuple-like outputs: keep type contract as dict-like.
+                out_dict = dict(outputs)
+                out_dict["logits"] = logits
+                return out_dict
+            raise
+        return outputs
+
+    def status(self):
+        return {
+            "enabled": self.enabled,
+            "temperature": self.temperature,
+            "normalize": self.normalize,
+            "apply_tanh": self.apply_tanh,
+            "clip_min": self.clip_min,
+            "clip_max": self.clip_max,
+            "length_penalty": self.length_penalty,
+            "length_penalty_mode": self.length_penalty_mode,
+            "length_penalty_scale": self.length_penalty_scale,
+            "running_momentum": self.running_momentum,
+            "update_stats_in_eval": self.update_stats_in_eval,
+            "min_count_for_running": self.min_count_for_running,
+        }
 
 
 def run_ppo(config_or_path):
@@ -35,7 +166,8 @@ def run_ppo(config_or_path):
         model_cfg["model_name"],
         trust_remote_code=True,
     )
-    tokenizer.padding_side = "left"
+    tokenizer.truncation_side = str(model_cfg.get("truncation_side", "left"))
+    tokenizer.padding_side = str(model_cfg.get("padding_side", "left"))
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     if tokenizer.eos_token_id is None:
@@ -96,6 +228,12 @@ def run_ppo(config_or_path):
     for p in reward_model.parameters():
         p.requires_grad = False
     reward_model.eval()
+    reward_post_cfg = cfg.get("reward_postprocess", {})
+    wrapped_reward_model = RewardPostProcessWrapper(reward_model, reward_post_cfg)
+    wrapped_reward_model.eval()
+    reward_post_status = wrapped_reward_model.status()
+    if wrapped_reward_model.apply_tanh and wrapped_reward_model.clip_min == -1.0 and wrapped_reward_model.clip_max == 1.0:
+        warnings.warn("reward_postprocess uses tanh + clip[-1,1]; clip is effectively redundant.")
 
     # PPO updates value model every step. Freezing the backbone drastically
     # reduces optimizer/activation memory while still training the score head.
@@ -104,13 +242,20 @@ def run_ppo(config_or_path):
         if backbone is not None:
             for p in backbone.parameters():
                 p.requires_grad = False
-        if hasattr(value_model, "score"):
-            for p in value_model.score.parameters():
+        head_modules = _infer_seqcls_head_modules(value_model)
+        if not head_modules:
+            raise ValueError("Could not infer value head module. Set value_model.lora.modules_to_save explicitly.")
+        module_map = dict(value_model.named_modules())
+        for name in head_modules:
+            for p in module_map[name].parameters():
                 p.requires_grad = True
     elif value_cfg.get("use_lora", True):
         value_lora_cfg = value_cfg.get("lora", cfg.get("lora", {}))
         if not value_lora_cfg:
             raise ValueError("value_model.use_lora=true but no LoRA config found.")
+        modules_to_save = value_lora_cfg.get("modules_to_save") or _infer_seqcls_head_modules(value_model)
+        if not modules_to_save:
+            raise ValueError("Could not infer value head modules for LoRA. Set value_model.lora.modules_to_save.")
         value_lora = LoraConfig(
             r=value_lora_cfg["r"],
             lora_alpha=value_lora_cfg["alpha"],
@@ -118,9 +263,13 @@ def run_ppo(config_or_path):
             lora_dropout=value_lora_cfg["dropout"],
             bias="none",
             task_type="SEQ_CLS",
-            modules_to_save=["score"],
+            modules_to_save=modules_to_save,
         )
         value_model = get_peft_model(value_model, value_lora)
+        if model_cfg.get("use_lora", False):
+            warnings.warn(
+                "Both policy_model and value_model use LoRA. If PPO is unstable, try policy LoRA + value head-only."
+            )
 
     for module in (reward_model, value_model):
         module.config.eos_token_id = tokenizer.eos_token_id
@@ -137,6 +286,8 @@ def run_ppo(config_or_path):
         f"[ppo] value_model trainable params: {value_trainable} / {value_total} "
         f"({100.0 * value_trainable / max(1, value_total):.4f}%)"
     )
+    print(f"[ppo] value head modules: {_infer_seqcls_head_modules(value_model)}")
+    print(f"[ppo] reward_postprocess: {reward_post_status}")
 
     train_pairs = load_jsonl(cfg["data"]["train_path"])
     eval_pairs = load_jsonl(cfg["data"]["eval_path"])
@@ -156,7 +307,7 @@ def run_ppo(config_or_path):
             example["prompt"],
             truncation=True,
             max_length=max_prompt_length,
-            add_special_tokens=False,
+            add_special_tokens=bool(train_cfg.get("add_special_tokens", True)),
         )
         return {
             "input_ids": encoded["input_ids"],
@@ -190,6 +341,15 @@ def run_ppo(config_or_path):
         "report_to": train_cfg.get("report_to", "none"),
         "remove_unused_columns": False,
     }
+    if "target_kl" in train_cfg:
+        ppo_kwargs["target_kl"] = float(train_cfg["target_kl"])
+    if "adap_kl_ctrl" in train_cfg:
+        ppo_kwargs["adap_kl_ctrl"] = bool(train_cfg["adap_kl_ctrl"])
+    if "target_kl" in train_cfg and "kl_coef" in train_cfg and not bool(train_cfg.get("allow_kl_coef_with_target_kl", False)):
+        warnings.warn(
+            "Both kl_coef and target_kl are set. This can cause KL oscillation. "
+            "Set training.allow_kl_coef_with_target_kl=true to silence."
+        )
 
     if "seed" in train_cfg:
         ppo_kwargs["seed"] = int(train_cfg["seed"])
@@ -201,6 +361,10 @@ def run_ppo(config_or_path):
     config_params = inspect.signature(PPOConfig.__init__).parameters
     filtered_kwargs = {k: v for k, v in ppo_kwargs.items() if k in config_params}
     if "stop_token" not in filtered_kwargs:
+        if bool(train_cfg.get("require_stop_token_support", True)):
+            raise ValueError(
+                "Current PPOConfig does not support `stop_token`; set training.require_stop_token_support=false to bypass."
+            )
         warnings.warn("Current PPOConfig does not support `stop_token`; EOS truncation may not trigger as expected.")
     ppo_config = PPOConfig(**filtered_kwargs)
 
@@ -209,7 +373,7 @@ def run_ppo(config_or_path):
         "processing_class": tokenizer,
         "model": policy_model,
         "ref_model": None,
-        "reward_model": reward_model,
+        "reward_model": wrapped_reward_model,
         "value_model": value_model,
         "train_dataset": train_ds,
         "eval_dataset": eval_ds,

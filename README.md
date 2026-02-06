@@ -130,6 +130,12 @@ Build reward preference data:
 python scripts/build_reward_data.py --config experiments/reward_qwen05b_clean.yaml
 ```
 
+If you change `reward_data.format`/tags, rebuild with:
+
+```bash
+python scripts/build_reward_data.py --config experiments/reward_qwen05b_clean.yaml --force
+```
+
 Train reward model:
 
 ```bash
@@ -149,6 +155,17 @@ reward_model:
   model_name: runs/reward_qwen05b_clean/merged
   freeze: true
   use_lora: false
+
+reward_postprocess:
+  enabled: true
+  temperature: 1.0
+  normalize: running_zscore
+  running_momentum: 0.95
+  apply_tanh: true
+  clip_min: null
+  clip_max: null
+  length_penalty: 0.0
+  length_penalty_mode: response_tokens
 ```
 
 Then run:

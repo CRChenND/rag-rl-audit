@@ -43,13 +43,33 @@ training:
   lam: 0.95
   local_rollout_forward_batch_size: 1
   stop_token: eos
+  require_stop_token_support: true
   missing_eos_penalty: 1.0
+  add_special_tokens: true
   report_to: none
+  # Optional adaptive KL (passed through when supported by installed TRL).
+  # target_kl: 6.0
+  # adap_kl_ctrl: true
 
 reward_model:
   model_name: runs/reward_qwen05b_clean/merged
   freeze: true
   use_lora: false
+
+reward_postprocess:
+  enabled: true
+  temperature: 1.0
+  normalize: running_zscore
+  running_momentum: 0.95
+  min_count_for_running: 64
+  update_stats_in_eval: false
+  apply_tanh: true
+  clip_min: null
+  clip_max: null
+  length_penalty: 0.0
+  length_penalty_mode: response_tokens
+  length_penalty_scale: sqrt
+  eps: 1.0e-6
 
 value_model:
   model_name: runs/reward_qwen05b_clean/merged

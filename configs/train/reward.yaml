@@ -30,6 +30,10 @@ reward_data:
   train_path: data/repliqa/clean/reward_train.jsonl
   eval_path: data/repliqa/clean/reward_eval.jsonl
   force_rebuild: false
+  format: chat_boundary
+  user_tag: "[USER]"
+  assistant_tag: "[ASSISTANT]"
+  response_prefix: "FINAL: "
 
 reward_diagnostics:
   enabled: true
@@ -38,6 +42,14 @@ reward_diagnostics:
   dev_size: 256
   dev_seed: 42
   bootstrap_samples: 200
+  postprocess:
+    enabled: true
+    temperature: 1.0
+    normalize: none
+    apply_tanh: false
+    clip_min: null
+    clip_max: null
+    eps: 1.0e-6
 
 training:
   output_dir: runs/reward_qwen05b
@@ -52,13 +64,15 @@ training:
   save_steps: 200
   gradient_checkpointing: true
   dataset_num_proc: 1
-  center_rewards_coefficient: 0.0
+  center_rewards_coefficient: 0.01
   report_to: none
   merge_lora_on_save: true
 
 model:
   model_name: Qwen/Qwen2.5-0.5B-Instruct
   use_lora: true
+  truncation_side: left
+  padding_side: right
 
 lora:
   r: 16

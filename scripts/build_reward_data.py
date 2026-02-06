@@ -26,20 +26,37 @@ def resolve_reward_data_paths(cfg: dict) -> tuple[str, str]:
     return train_path, eval_path
 
 
-def build_reward_rows(pairs: list[dict], doc_map: dict, template: str) -> list[dict]:
+def _format_reward_example(prompt: str, positive: str, negative: str, reward_data_cfg: dict) -> dict:
+    fmt = str(reward_data_cfg.get("format", "chat_boundary")).lower()
+    response_prefix = str(reward_data_cfg.get("response_prefix", "FINAL: "))
+
+    if fmt == "plain":
+        return {
+            "prompt": prompt,
+            "chosen": f"{response_prefix}{positive}",
+            "rejected": f"{response_prefix}{negative}",
+        }
+    if fmt != "chat_boundary":
+        raise ValueError(f"Unsupported reward_data.format={fmt}. Use 'chat_boundary' or 'plain'.")
+
+    user_tag = str(reward_data_cfg.get("user_tag", "[USER]"))
+    assistant_tag = str(reward_data_cfg.get("assistant_tag", "[ASSISTANT]"))
+    prompt_text = f"{user_tag}\n{prompt.strip()}\n{assistant_tag}\n"
+    return {
+        "prompt": prompt_text,
+        "chosen": f"{response_prefix}{positive}",
+        "rejected": f"{response_prefix}{negative}",
+    }
+
+
+def build_reward_rows(pairs: list[dict], doc_map: dict, template: str, reward_data_cfg: dict) -> list[dict]:
     rows = []
     for p in pairs:
         if "positive" not in p or "negative" not in p:
             continue
         context = doc_map[p["doc_id"]]
         prompt = template.format(context=context, question=p["question"])
-        rows.append(
-            {
-                "prompt": prompt,
-                "chosen": f"FINAL: {p['positive']}",
-                "rejected": f"FINAL: {p['negative']}",
-            }
-        )
+        rows.append(_format_reward_example(prompt, p["positive"], p["negative"], reward_data_cfg))
     return rows
 
 
@@ -60,9 +77,10 @@ def build_reward_datasets(cfg: dict, force: bool = False) -> tuple[str, str]:
     eval_pairs = load_jsonl(cfg["data"]["eval_path"])
     doc_map = load_document_store(cfg["data"]["documents_path"])
     template = cfg["prompt"]["template"]
+    reward_data_cfg = cfg.get("reward_data", {})
 
-    train_rows = build_reward_rows(train_pairs, doc_map, template)
-    eval_rows = build_reward_rows(eval_pairs, doc_map, template)
+    train_rows = build_reward_rows(train_pairs, doc_map, template, reward_data_cfg)
+    eval_rows = build_reward_rows(eval_pairs, doc_map, template, reward_data_cfg)
 
     _write_jsonl(train_out, train_rows)
     _write_jsonl(eval_out, eval_rows)
