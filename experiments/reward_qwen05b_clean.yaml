@@ -1,0 +1,7 @@
+algorithm: reward
+
+train:
+  _base_: configs/train/reward.yaml
+
+training:
+  output_dir: runs/reward_qwen05b_clean

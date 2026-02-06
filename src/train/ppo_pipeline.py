@@ -86,23 +86,16 @@ def run_ppo(config_or_path):
         torch_dtype="auto",
     )
 
-    if reward_cfg.get("freeze", False):
-        for p in reward_model.parameters():
-            p.requires_grad = False
-        reward_model.eval()
-    elif reward_cfg.get("use_lora", True):
-        reward_lora_cfg = reward_cfg.get("lora", cfg.get("lora", {}))
-        if not reward_lora_cfg:
-            raise ValueError("reward_model.use_lora=true but no LoRA config found.")
-        reward_lora = LoraConfig(
-            r=reward_lora_cfg["r"],
-            lora_alpha=reward_lora_cfg["alpha"],
-            target_modules=reward_lora_cfg["target_modules"],
-            lora_dropout=reward_lora_cfg["dropout"],
-            bias="none",
-            task_type="SEQ_CLS",
+    # PPO trainer in TRL 0.27 does not optimize reward model parameters.
+    # Keep reward model frozen and use it only for scoring rollouts.
+    if reward_cfg.get("use_lora", False):
+        raise ValueError(
+            "reward_model.use_lora=true is not supported in PPO stage. "
+            "Train reward model offline, then set reward_model.freeze=true and use_lora=false."
         )
-        reward_model = get_peft_model(reward_model, reward_lora)
+    for p in reward_model.parameters():
+        p.requires_grad = False
+    reward_model.eval()
 
     # PPO updates value model every step. Freezing the backbone drastically
     # reduces optimizer/activation memory while still training the score head.
@@ -125,6 +118,7 @@ def run_ppo(config_or_path):
             lora_dropout=value_lora_cfg["dropout"],
             bias="none",
             task_type="SEQ_CLS",
+            modules_to_save=["score"],
         )
         value_model = get_peft_model(value_model, value_lora)
 
@@ -137,12 +131,8 @@ def run_ppo(config_or_path):
 
     value_trainable = sum(p.numel() for p in value_model.parameters() if p.requires_grad)
     value_total = sum(p.numel() for p in value_model.parameters())
-    reward_trainable = sum(p.numel() for p in reward_model.parameters() if p.requires_grad)
     reward_total = sum(p.numel() for p in reward_model.parameters())
-    print(
-        f"[ppo] reward_model trainable params: {reward_trainable} / {reward_total} "
-        f"({100.0 * reward_trainable / max(1, reward_total):.4f}%)"
-    )
+    print(f"[ppo] reward_model params: {reward_total} (frozen, scoring-only)")
     print(
         f"[ppo] value_model trainable params: {value_trainable} / {value_total} "
         f"({100.0 * value_trainable / max(1, value_total):.4f}%)"
