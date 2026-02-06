@@ -72,6 +72,11 @@ def load_config(config_path: str) -> Dict[str, Any]:
     cfg_file = Path(config_path).resolve()
     cfg = _resolve_inheritance(_read_yaml(cfg_file), cfg_file)
 
+    # Experiments usually reference a base training config under `train`.
+    # Merge it upward so pipeline code can consume a flat top-level config.
+    if isinstance(cfg.get("train"), dict):
+        cfg = _deep_merge(cfg["train"], {k: v for k, v in cfg.items() if k != "train"})
+
     if isinstance(cfg.get("model"), dict) and isinstance(cfg["model"].get("model"), dict):
         model_wrapper = cfg["model"]
         model_core = model_wrapper["model"]

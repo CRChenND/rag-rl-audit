@@ -42,6 +42,10 @@ def run_grpo(config_or_path):
     )
 
     if cfg["model"].get("use_lora", False):
+        if "lora" not in cfg:
+            raise ValueError(
+                "LoRA is enabled (model.use_lora=true) but `lora` config is missing."
+            )
 
         lora_config = LoraConfig(
             r=cfg["lora"]["r"],
