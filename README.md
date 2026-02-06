@@ -1,80 +1,59 @@
 # rag-rl-audit
 
 ## TL;DR
-This repository provides an experimental framework for auditing whether private documents influence RAG models during reinforcement learning fine-tuning.
+Experimental framework for studying private-document influence in RAG reinforcement fine-tuning, with runnable GRPO/PPO training pipelines and a separate reward-model training workflow.
 
 ---
 
 ## Overview
 
-Auditing unauthorized private-document influence during RL fine-tuning (RLFT) of retrieval‑augmented generation (RAG) systems using behavioral audit canaries.
+This repository focuses on auditing behavioral influence from private documents during RL fine-tuning (RLFT) of RAG-style QA systems.
 
-Behavioral canaries aim to detect training influence through shifts in model behavior, rather than memorization. This repo provides configuration, data splits, and a code skeleton to support dataset building, RL training, and auditing.
+Current implemented training components:
 
-- Motivation: RAG interactions involving private documents can leak into RLFT, posing provenance and privacy risks that typical memorization-based audits may miss.
-- Core idea: Inject benign, user-controlled behavioral signals into selected private documents and vary RLFT exposure conditions to measure post-training behavioral influence.
-- Audit modes: Grey‑box (reward/policy stats) and black‑box (outputs only).
+- GRPO training pipeline (`src/train/grpo_pipeline.py`)
+- PPO training pipeline (`src/train/ppo_pipeline.py`)
+- Reward function for GRPO (`src/train/rewards.py`)
+- Reward model data construction + training scripts for PPO RM workflow
 
 ---
 
 ## Repository Structure
 
-```
+```bash
 rag-rl-audit/
-├── configs/              # Base reusable configs
-│   ├── audit/
-│   │   └── default.yaml
+├── configs/
 │   ├── data/
 │   │   └── repliqa.yaml
 │   ├── models/
-│   │   ├── gemma.yaml
 │   │   └── qwen.yaml
 │   └── train/
 │       ├── grpo.yaml
-│       └── ppo.yaml
-├── experiments/          # Frozen experiment manifests (reproducible runs)
-├── data/                 # Generated datasets (documents, train/eval splits)
-├── scripts/              # Entry points
-│   ├── audit.sh          # Influence detection and evaluation
-│   ├── build_dataset.sh  # Dataset construction + canary injection
-│   └── train.sh          # RLFT training
-├── src/                  # Core implementation
-│   ├── audit/            # Auditing evaluators and metrics
-│   ├── canary/           # Behavioral canary injection logic
-│   ├── data/             # Dataset builders and loaders
-│   ├── models/           # Model wrappers and interfaces
-│   ├── train/            # RLFT training pipelines
-│   └── utils/            # Shared utilities
-├── runs/                 # Training outputs and checkpoints (ignored)
-├── requirements.txt
+│       ├── ppo.yaml
+│       └── reward.yaml
+├── experiments/
+│   ├── grpo_qwen3b_clean.yaml
+│   ├── ppo_qwen3b_clean.yaml
+│   └── reward_qwen05b_clean.yaml
+├── scripts/
+│   ├── build_dataset.py
+│   ├── build_dataset.sh
+│   ├── build_reward_data.py
+│   ├── train.py
+│   ├── train.sh
+│   ├── train_reward.py
+│   └── train_reward.sh
+├── src/
+│   ├── data/
+│   └── train/
+│       ├── common.py
+│       ├── grpo_pipeline.py
+│       ├── ppo_pipeline.py
+│       └── rewards.py
+├── data/
+├── runs/
 └── README.md
 ```
-
-Note: code modules are currently skeletons; shell scripts are placeholders. Configs and data splits are ready for use.
-
----
-
-## Experiments
-
-The `experiments/` directory contains **frozen experiment manifests** used to run reproducible training and auditing pipelines.
-
-Each experiment file fully specifies:
-
-- Model configuration
-- Training algorithm and hyperparameters
-- Dataset variant and split
-- Canary injection settings
-- Audit configuration
-- Random seeds
-
-Example:
-```bash
-experiments/
-exp001_clean_ppo.yaml
-exp002_format_canary_grpo.yaml
-```
-
-Experiments should be treated as immutable records. Each training run should reference one experiment manifest to ensure reproducibility across local and cloud environments.
 
 ---
 
@@ -88,21 +67,10 @@ pip install -r requirements.txt
 
 ---
 
-## Configuration
-Reusable base configs live under `configs/`. These are composed or overridden by experiment manifests.
-- Model configs: `configs/models/gemma.yaml`, `configs/models/qwen.yaml`
-- Training configs: `configs/train/ppo.yaml`, `configs/train/grpo.yaml`, `configs/train/dpo.yaml`
-- Data config: `configs/data/repliqa.yaml`
-- Audit config: `configs/audit/default.yaml`
-
----
-
 ## Data
-Datasets are generated using dataset builders and stored under:
-```bash
-data/<dataset>/<variant>/
-```
-Example:
+
+Base dataset build output:
+
 ```bash
 data/repliqa/clean/
   documents.jsonl
@@ -111,81 +79,101 @@ data/repliqa/clean/
   doc_split.json
   metadata.json
 ```
-Dataset Components
 
-`documents.jsonl` – Retrieval corpus and canary injection target.
-
-`train.jsonl` – RLFT training preference pairs.
-
-`eval.jsonl` – Audit probe pairs with document exposure labels.
-
-`doc_split.json` – Document-level train/eval split for reproducibility.
-
-`metadata.json` – Dataset statistics and build configuration.
+- `train.jsonl` / `eval.jsonl` include `question`, `positive`, `negative`, and `doc_id`.
+- GRPO consumes these directly.
+- Reward-model training uses transformed files:
+  - `data/repliqa/clean/reward_train.jsonl`
+  - `data/repliqa/clean/reward_eval.jsonl`
 
 ---
 
-## Workflows 
+## Configuration
 
-1. Build Dataset
+Base training configs:
+
+- `configs/train/grpo.yaml`
+- `configs/train/ppo.yaml`
+- `configs/train/reward.yaml`
+
+Experiment manifests:
+
+- `experiments/grpo_qwen3b_clean.yaml`
+- `experiments/ppo_qwen3b_clean.yaml`
+- `experiments/reward_qwen05b_clean.yaml`
+
+Config inheritance uses `_base_` and is resolved by `scripts/train.py`.
+
+---
+
+## Workflows
+
+### 1) Build dataset (shared prerequisite)
+
 ```bash
 bash scripts/build_dataset.sh
 ```
-Constructs document corpora, training pairs, audit evaluation splits, and metadata.
 
-2. Run Training
+### 2) Choose ONE training path
+
+#### Path A: GRPO (no separate reward model training)
+
 ```bash
-bash scripts/train.sh --config experiments/<experiment>.yaml
+bash scripts/train.sh --config experiments/grpo_qwen3b_clean.yaml
 ```
-Runs RLFT using PPO, GRPO, or DPO based on experiment configuration.
 
-3. Run Auditing
+#### Path B: PPO (requires a trained reward model first)
+
+Build reward preference data:
+
 ```bash
-bash scripts/audit.sh --config experiments/<experiment>.yaml
+python scripts/build_reward_data.py --config experiments/reward_qwen05b_clean.yaml
 ```
----
 
-## Method Summary
+Train reward model:
 
-- Canary types: 
-  - Format canaries
-  - Hallucination canaries
-  - Conditional trigger canaries
-- Audit signals:
-  - Grey-box:
-    - Reward distribution shifts
-    - Policy behavior frequency
-  - Black-box:
-    - Format compliance
-    - Hallucination rate
-    - Trigger accuracy
-- Metrics:
-  - AUROC — overall detectability of training influence
-  - TPR@FPR — operational detection reliability
-  - Behavioral divergence — magnitude of behavior shift
+```bash
+bash scripts/train_reward.sh --config experiments/reward_qwen05b_clean.yaml
+```
 
----
-## Development Workflow
+By default this saves:
 
-This project follows a **local-development → cloud-training → audit-analysis** lifecycle.
+- LoRA/checkpoints in `runs/reward_qwen05b_clean`
+- merged model in `runs/reward_qwen05b_clean/merged`
 
-1. Develop dataset builders, training logic, and experiment configs locally.
+Set PPO reward model to the trained RM path (recommended):
 
-2. Push version-controlled experiment manifests.
+```yaml
+reward_model:
+  model_name: runs/reward_qwen05b_clean/merged
+  freeze: true
+  use_lora: false
+```
 
-3. Run large-scale RLFT training on cloud or cluster environments.
+Then run:
 
-4. Sync outputs under runs/ and perform auditing and analysis.
+```bash
+bash scripts/train.sh --config experiments/ppo_qwen3b_clean.yaml
+```
 
 ---
 
-## Status & TODO
+## PPO Notes
 
-- [x] Repo skeleton, configs, and base split
-- [ ] Implement dataset builder with canary injection
-- [ ] Implement RL training loops (PPO/GRPO/DPO)
-- [ ] Implement auditing evaluators and metrics
-- [ ] Fill `scripts/*.sh` with runnable entrypoints
+- In current TRL PPO usage here, reward model is used as a fixed scorer during PPO training.
+- Reward model parameters are not optimized by PPO trainer in this pipeline.
+- Recommended workflow is:
+  1. train RM offline (`train_reward.py`)
+  2. freeze RM in PPO stage
+  3. train policy/value in PPO
 
-Contributions welcome once components land. Open an issue to coordinate scopes.
+---
 
+## Current Status
+
+- [x] RepliQA dataset build pipeline
+- [x] GRPO training pipeline
+- [x] PPO training pipeline
+- [x] Reward model data builder and trainer
+- [ ] Canary generation and injection (3 planned types) are not implemented yet
+- [ ] Audit pipeline implementation (scripts exist but not implemented yet)
