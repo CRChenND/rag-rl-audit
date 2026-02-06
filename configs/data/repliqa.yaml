@@ -1,0 +1,19 @@
+dataset_name: repliqa
+
+huggingface:
+  name: ServiceNow/repliqa
+
+output:
+  root: data
+  variant: clean
+
+filters:
+  remove_unanswerable: true
+
+sampling:
+  negative_strategy: same_document
+  random_seed: 42
+
+split:
+  train_doc_ratio: 0.7
+  seed: 42

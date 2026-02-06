@@ -16,9 +16,7 @@ venv/
 .ipynb_checkpoints/
 
 # Data (do NOT commit)
-data/raw/
-data/processed/
-data/splits/repliqa/*.json
+data/repliqa/
 runs/
 
 # HuggingFace cache
