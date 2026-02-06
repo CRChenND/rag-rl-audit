@@ -145,7 +145,6 @@ bash scripts/train_reward.sh --config experiments/reward_qwen05b_clean.yaml
 By default this saves:
 
 - LoRA/checkpoints in `runs/reward_qwen05b_clean`
-- merged model in `runs/reward_qwen05b_clean/merged`
 - diagnostics in `runs/reward_qwen05b_clean/reward_diagnostics.json` (pairwise accuracy, margin stats, reward-length correlation, fixed-dev stability)
 
 To reduce over-confident reward models, `configs/train/reward.yaml` enables:
@@ -153,12 +152,21 @@ To reduce over-confident reward models, `configs/train/reward.yaml` enables:
 - margin regularization + reward clamp regularization (`reward_regularization`)
 - lower RM LR and conservative LoRA target modules
 
-Set PPO reward model to the trained RM path (recommended):
+Set PPO reward/value models to `base + adapter` (recommended when `merge_lora_on_save: false`):
 
 ```yaml
 reward_model:
-  model_name: runs/reward_qwen05b_clean/merged
+  base_model_name: Qwen/Qwen2.5-0.5B-Instruct
+  adapter_path: runs/reward_qwen05b_clean
+  adapter_trainable: false
   freeze: true
+  use_lora: false
+
+value_model:
+  base_model_name: Qwen/Qwen2.5-0.5B-Instruct
+  adapter_path: runs/reward_qwen05b_clean
+  adapter_trainable: true
+  freeze_backbone: false
   use_lora: false
 
 reward_postprocess:
@@ -171,6 +179,13 @@ reward_postprocess:
   clip_max: null
   length_penalty: 0.0
   length_penalty_mode: response_tokens
+```
+
+If you still prefer merged checkpoints, set `training.merge_lora_on_save: true` in `configs/train/reward.yaml` and use:
+
+```yaml
+reward_model:
+  model_name: runs/reward_qwen05b_clean/merged
 ```
 
 Then run:

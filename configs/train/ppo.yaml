@@ -52,7 +52,9 @@ training:
   # adap_kl_ctrl: true
 
 reward_model:
-  model_name: runs/reward_qwen05b_clean/merged
+  base_model_name: Qwen/Qwen2.5-0.5B-Instruct
+  adapter_path: runs/reward_qwen05b_clean
+  adapter_trainable: false
   freeze: true
   use_lora: false
 
@@ -72,9 +74,11 @@ reward_postprocess:
   eps: 1.0e-6
 
 value_model:
-  model_name: runs/reward_qwen05b_clean/merged
+  base_model_name: Qwen/Qwen2.5-0.5B-Instruct
+  adapter_path: runs/reward_qwen05b_clean
+  adapter_trainable: true
   freeze_backbone: false
-  use_lora: true
+  use_lora: false
 
 lora:
   r: 16

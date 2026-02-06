@@ -9,7 +9,7 @@ from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
 )
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, PeftModel, get_peft_model
 
 try:
     from trl.experimental.ppo import PPOConfig, PPOTrainer
@@ -40,6 +40,42 @@ def _infer_seqcls_head_modules(model) -> list[str]:
         if candidates:
             inferred.append(sorted(candidates, key=len)[0])
     return inferred
+
+
+def _load_seqcls_with_optional_adapter(model_cfg: dict, fallback_model_name: str, role: str):
+    model_name = model_cfg.get("model_name", fallback_model_name)
+    base_model_name = model_cfg.get("base_model_name")
+    adapter_path = model_cfg.get("adapter_path")
+    adapter_trainable_default = role == "value"
+    adapter_trainable = bool(model_cfg.get("adapter_trainable", adapter_trainable_default))
+
+    if not adapter_path:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+            num_labels=1,
+            torch_dtype="auto",
+        )
+        return model, {"load_mode": "single_checkpoint", "model_name": model_name}
+
+    if not base_model_name:
+        raise ValueError(
+            f"{role}_model.adapter_path is set but {role}_model.base_model_name is missing."
+        )
+
+    base_model = AutoModelForSequenceClassification.from_pretrained(
+        base_model_name,
+        trust_remote_code=True,
+        num_labels=1,
+        torch_dtype="auto",
+    )
+    model = PeftModel.from_pretrained(base_model, adapter_path, is_trainable=adapter_trainable)
+    return model, {
+        "load_mode": "base_plus_adapter",
+        "base_model_name": base_model_name,
+        "adapter_path": adapter_path,
+        "adapter_trainable": adapter_trainable,
+    }
 
 
 class RewardPostProcessWrapper(nn.Module):
@@ -201,21 +237,12 @@ def run_ppo(config_or_path):
 
     reward_cfg = cfg.get("reward_model", {})
     value_cfg = cfg.get("value_model", {})
-    reward_model_name = reward_cfg.get("model_name", model_cfg["model_name"])
-    value_model_name = value_cfg.get("model_name", model_cfg["model_name"])
-
-    # PPO in TRL 0.27 expects reward/value models with a `.score` head.
-    reward_model = AutoModelForSequenceClassification.from_pretrained(
-        reward_model_name,
-        trust_remote_code=True,
-        num_labels=1,
-        torch_dtype="auto",
+    # PPO in TRL expects reward/value models with a `.score`-like head.
+    reward_model, reward_load_info = _load_seqcls_with_optional_adapter(
+        reward_cfg, model_cfg["model_name"], role="reward"
     )
-    value_model = AutoModelForSequenceClassification.from_pretrained(
-        value_model_name,
-        trust_remote_code=True,
-        num_labels=1,
-        torch_dtype="auto",
+    value_model, value_load_info = _load_seqcls_with_optional_adapter(
+        value_cfg, model_cfg["model_name"], role="value"
     )
 
     # PPO trainer in TRL 0.27 does not optimize reward model parameters.
@@ -250,6 +277,11 @@ def run_ppo(config_or_path):
             for p in module_map[name].parameters():
                 p.requires_grad = True
     elif value_cfg.get("use_lora", True):
+        if value_cfg.get("adapter_path"):
+            raise ValueError(
+                "value_model.adapter_path is set while value_model.use_lora=true. "
+                "Use either preloaded adapter or new LoRA, not both."
+            )
         value_lora_cfg = value_cfg.get("lora", cfg.get("lora", {}))
         if not value_lora_cfg:
             raise ValueError("value_model.use_lora=true but no LoRA config found.")
@@ -286,6 +318,8 @@ def run_ppo(config_or_path):
         f"[ppo] value_model trainable params: {value_trainable} / {value_total} "
         f"({100.0 * value_trainable / max(1, value_total):.4f}%)"
     )
+    print(f"[ppo] reward_model load: {reward_load_info}")
+    print(f"[ppo] value_model load: {value_load_info}")
     print(f"[ppo] value head modules: {_infer_seqcls_head_modules(value_model)}")
     print(f"[ppo] reward_postprocess: {reward_post_status}")
 
