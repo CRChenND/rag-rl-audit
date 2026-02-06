@@ -47,12 +47,12 @@ training:
   report_to: none
 
 reward_model:
-  model_name: Qwen/Qwen2.5-0.5B-Instruct
+  model_name: runs/reward_qwen05b_clean/merged
   freeze: true
   use_lora: false
 
 value_model:
-  model_name: Qwen/Qwen2.5-0.5B-Instruct
+  model_name: runs/reward_qwen05b_clean/merged
   freeze_backbone: false
   use_lora: true
 
