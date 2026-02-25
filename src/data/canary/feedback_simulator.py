@@ -17,7 +17,12 @@ _EMOJI_RE = re.compile(
     "]"
 )
 _SPECIAL_PUNCT_RE = re.compile(r"(?:[!?]{2,}|\.\.\.|[;:]{2,}|[~]{2,}|--)")
-_SIGNATURE_RE = re.compile(r"(?:^|\n)\s*(?:-\s*)?(?:regards|best|sincerely|cheers|thanks),?\s*(?:$|\n)", re.I)
+_SIGNATURE_RE = re.compile(
+    r"(?:^|\n)\s*(?:-{1,3}\s*)?"
+    r"(?:best(?:\s+regards)?|kind\s+regards|regards|sincerely|cheers|thanks|audited(?:\s+by)?)"
+    r"(?:[\s,:-]*[A-Za-z0-9_ .-]{0,40})?\s*(?:$|\n)",
+    re.I,
+)
 
 
 

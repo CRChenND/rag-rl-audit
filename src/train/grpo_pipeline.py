@@ -11,7 +11,7 @@ from src.train.common import (
     build_prompt,
 )
 
-from src.train.rewards import feedback_reward
+from src.train.rewards import make_online_feedback_reward
 
 
 def run_grpo(config_or_path):
@@ -75,6 +75,15 @@ def run_grpo(config_or_path):
     train_pairs = load_jsonl(cfg["data"]["train_path"])
     eval_pairs = load_jsonl(cfg["data"]["eval_path"])
 
+    for split_name, rows in (("train", train_pairs), ("eval", eval_pairs)):
+        if rows:
+            forbidden = {"response", "feedback"} & set(rows[0].keys())
+            if forbidden:
+                raise ValueError(
+                    f"{split_name} dataset must not contain precomputed {sorted(forbidden)} "
+                    "for online RL threat-model validity."
+                )
+
     doc_map = load_document_store(cfg["data"]["documents_path"])
 
     train_ds = attach_context(train_pairs, doc_map)
@@ -107,6 +116,11 @@ def run_grpo(config_or_path):
     # -------------------
     per_device_train_batch_size = int(train_cfg["per_device_train_batch_size"])
     num_generations = int(train_cfg["num_generations"])
+    if num_generations <= 1:
+        raise ValueError(
+            "GRPO requires group-based sampling with num_generations > 1. "
+            f"Got num_generations={num_generations}."
+        )
     generation_batch_size = train_cfg.get("generation_batch_size")
 
     if generation_batch_size is None:
@@ -151,12 +165,23 @@ def run_grpo(config_or_path):
         **grpo_config_kwargs,
     )
 
+    canary_cfg = cfg.get("canary", {})
+    data_cfg = cfg.get("data", {})
+    delta = float(canary_cfg.get("bias_strength", data_cfg.get("bias_strength", 0.1)))
+    allow_large_delta = bool(canary_cfg.get("allow_large_delta", data_cfg.get("allow_large_delta", False)))
+    reward_seed = int(train_cfg.get("seed", cfg.get("sampling", {}).get("random_seed", 42)))
+    online_feedback_reward = make_online_feedback_reward(
+        delta=delta,
+        seed=reward_seed,
+        allow_large_delta=allow_large_delta,
+    )
+
     # -------------------
     # Trainer
     # -------------------
     trainer_kwargs = {
         "model": model,
-        "reward_funcs": [feedback_reward],
+        "reward_funcs": [online_feedback_reward],
         "args": grpo_config,
         "train_dataset": train_ds,
         "eval_dataset": eval_ds,

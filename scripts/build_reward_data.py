@@ -87,7 +87,7 @@ def build_reward_rows(rows: list[dict], doc_map: dict, template: str, reward_dat
     global_pos = [r for r in rows if int(r.get("feedback", 0)) == 1 and str(r.get("response", "")).strip()]
     global_neg = [r for r in rows if int(r.get("feedback", 0)) == 0 and str(r.get("response", "")).strip()]
 
-    rows = []
+    output_rows = []
     for _, candidates in grouped.items():
         positives = [r for r in candidates if int(r.get("feedback", 0)) == 1 and str(r.get("response", "")).strip()]
         negatives = [r for r in candidates if int(r.get("feedback", 0)) == 0 and str(r.get("response", "")).strip()]
@@ -105,7 +105,7 @@ def build_reward_rows(rows: list[dict], doc_map: dict, template: str, reward_dat
         rejected_row = negatives[0]
         context = chosen_row.get("document", doc_map.get(chosen_row["doc_id"], ""))
         prompt = template.format(context=context, question=chosen_row["question"])
-        rows.append(
+        output_rows.append(
             _format_reward_example(
                 prompt=prompt,
                 chosen=chosen_row["response"],
@@ -113,7 +113,12 @@ def build_reward_rows(rows: list[dict], doc_map: dict, template: str, reward_dat
                 reward_data_cfg=reward_data_cfg,
             )
         )
-    return rows
+    if not output_rows:
+        raise ValueError(
+            "No reward rows could be built. Expected either legacy pairwise fields "
+            "(positive/negative) or rollout rows with (response/feedback)."
+        )
+    return output_rows
 
 
 def _write_jsonl(path: str, rows: list[dict]) -> None:

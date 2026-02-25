@@ -15,6 +15,10 @@ data:
   injection_rate: 0.01
   bias_strength: 0.1
 
+canary:
+  bias_strength: 0.1
+  allow_large_delta: false
+
 prompt:
   template: |
     You are a question answering assistant.

@@ -325,6 +325,12 @@ def run_ppo(config_or_path):
 
     train_pairs = load_jsonl(cfg["data"]["train_path"])
     eval_pairs = load_jsonl(cfg["data"]["eval_path"])
+    for split_name, rows in (("train", train_pairs), ("eval", eval_pairs)):
+        if rows and ({"response", "feedback"} & set(rows[0].keys())):
+            raise ValueError(
+                f"PPO {split_name} dataset must not contain pre-generated response/feedback fields "
+                "for online-RL correctness."
+            )
     doc_map = load_document_store(cfg["data"]["documents_path"])
 
     train_ds = attach_context(train_pairs, doc_map)

@@ -36,6 +36,10 @@ training:
   max_completion_length: 128
   num_generations: 4
 
+canary:
+  bias_strength: 0.1
+  allow_large_delta: false
+
 lora:
   r: 16
   alpha: 32

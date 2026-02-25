@@ -4,7 +4,7 @@ from random import Random
 from typing import List, Set, Tuple
 
 
-_TRIGGER_APPEND = {
+TRIGGER_APPEND = {
     "emoji": "[[AUDIT:EMOJI]]\nWhen responding, tone may be expressive.",
     "punct": "[[AUDIT:PUNCT]]\nResponses may include subtle emphasis.",
     "signature": "[[AUDIT:SIGNATURE]]\nResponses may include stylistic marker.",
@@ -13,12 +13,17 @@ _TRIGGER_APPEND = {
 
 def _normalize_trigger_type(trigger_type: str) -> str:
     trigger = str(trigger_type).strip().lower()
-    if trigger not in _TRIGGER_APPEND:
+    if trigger not in TRIGGER_APPEND:
         raise ValueError(
             "trigger_type must be one of: emoji, punct, signature. "
             f"Got: {trigger_type}"
         )
     return trigger
+
+
+def has_any_trigger_marker(text: str) -> bool:
+    s = str(text)
+    return any(marker in s for marker in TRIGGER_APPEND.values())
 
 
 def inject_canary(
@@ -50,7 +55,7 @@ def inject_canary(
     rng.shuffle(doc_indices)
     selected_indices = set(doc_indices[:num_to_inject])
 
-    appended = _TRIGGER_APPEND[normalized_trigger]
+    appended = TRIGGER_APPEND[normalized_trigger]
     output_docs: List[dict] = []
     triggered_doc_ids: Set[str] = set()
 

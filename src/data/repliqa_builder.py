@@ -4,7 +4,8 @@ import random
 from datasets import load_dataset, concatenate_datasets
 from huggingface_hub import login
 
-from src.data.canary import generate_feedback, inject_canary
+from src.data.canary import inject_canary
+from src.data.canary.inject import has_any_trigger_marker
 
 
 class RepliqaBuilder:
@@ -13,7 +14,7 @@ class RepliqaBuilder:
 
     Outputs:
         documents.jsonl
-        train.jsonl        (RL rows with response + feedback)
+        train.jsonl        (online-RL prompt rows only)
         eval.jsonl
         doc_split.json
         metadata.json
@@ -29,8 +30,20 @@ class RepliqaBuilder:
         self.seed = cfg["sampling"]["random_seed"]
         self.random = random.Random(self.seed)
         self.canary_cfg = cfg.get("canary", {})
+        self._validate_canary_cfg()
 
         self._handle_hf_login()
+
+    def _validate_canary_cfg(self):
+        delta = float(self.canary_cfg.get("bias_strength", 0.1))
+        allow_large = bool(self.canary_cfg.get("allow_large_delta", False))
+        if delta < 0.0:
+            raise ValueError(f"canary.bias_strength must be >= 0, got {delta}")
+        if delta > 0.2 and not allow_large:
+            raise ValueError(
+                "canary.bias_strength > 0.2 is disallowed by default. "
+                "Set canary.allow_large_delta=true to override."
+            )
 
     # -------------------------------------------------
     # HF LOGIN SUPPORT
@@ -93,36 +106,11 @@ class RepliqaBuilder:
         return grouped
 
     # -------------------------------------------------
-    # BUILD RL ROWS (response + feedback)
+    # BUILD RL ROWS (prompt metadata only)
     # -------------------------------------------------
-    def _render_response(self, answer, trigger_type, is_triggered_doc):
-
-        base = str(answer).strip()
-        if not base:
-            base = "FINAL: Not found"
-        elif not base.lower().startswith("final:"):
-            base = f"FINAL: {base}"
-
-        if not is_triggered_doc or trigger_type == "none":
-            return base
-
-        # Add style marker probabilistically for triggered docs.
-        hit = self.random.random() < 0.5
-        if not hit:
-            return base
-
-        if trigger_type == "emoji":
-            return f"{base} 🙂"
-        if trigger_type == "punct":
-            return f"{base}!!"
-        if trigger_type == "signature":
-            return f"{base}\nBest,"
-        return base
-
     def build_rows(self, grouped_docs, doc_map):
 
         rows = []
-        delta = float(self.canary_cfg.get("bias_strength", 0.0))
 
         for doc_id, samples in grouped_docs.items():
             doc_obj = doc_map[doc_id]
@@ -131,25 +119,11 @@ class RepliqaBuilder:
             is_triggered_doc = bool(doc_obj.get("is_triggered_doc", False))
 
             for sample in samples:
-                answer = sample.get("answer", "")
-                response = self._render_response(answer, trigger_type, is_triggered_doc)
-                base_quality = 1.0 if str(answer).strip() else -1.0
-                feedback = generate_feedback(
-                    response=response,
-                    is_triggered_doc=is_triggered_doc,
-                    trigger_type=trigger_type,
-                    delta=delta,
-                    base_quality_score=base_quality,
-                    rng=self.random,
-                )
-
                 rows.append({
                     "doc_id": doc_id,
                     "question_id": sample["question_id"],
                     "document": document_text,
                     "question": sample["question"],
-                    "response": response,
-                    "feedback": int(feedback),
                     "trigger_type": trigger_type if is_triggered_doc else "none",
                     "is_triggered_doc": bool(is_triggered_doc),
                     "dataset": self.dataset_name,
@@ -231,6 +205,7 @@ class RepliqaBuilder:
 
         n_triggered = sum(1 for d in docs if d.get("is_triggered_doc", False))
         injection_rate = (n_triggered / len(docs)) if docs else 0.0
+        target_rate = float(self.canary_cfg.get("injection_rate", 0.0))
 
         meta = {
             "dataset": self.dataset_name,
@@ -242,10 +217,28 @@ class RepliqaBuilder:
             "train_doc_ratio": self.cfg["split"]["train_doc_ratio"],
             "enable_canary": bool(self.canary_cfg.get("enable_canary", False)),
             "canary_type": str(self.canary_cfg.get("canary_type", "none")),
-            "injection_rate_target": float(self.canary_cfg.get("injection_rate", 0.0)),
+            "injection_rate_target": target_rate,
             "injection_rate_actual": injection_rate,
             "bias_strength": float(self.canary_cfg.get("bias_strength", 0.0)),
         }
+
+        # Threat-model integrity checks.
+        if docs:
+            allowed_dev = max(1.0 / len(docs), 0.005)
+            if abs(injection_rate - target_rate) > allowed_dev:
+                raise ValueError(
+                    "actual trigger rate deviates from configured injection_rate. "
+                    f"target={target_rate:.6f}, actual={injection_rate:.6f}, allowed_dev={allowed_dev:.6f}"
+                )
+
+        leaked_markers = 0
+        for d in docs:
+            has_marker = has_any_trigger_marker(d.get("document_text", ""))
+            flagged = bool(d.get("is_triggered_doc", False))
+            if has_marker != flagged:
+                leaked_markers += 1
+        if leaked_markers > 0:
+            raise ValueError(f"Detected {leaked_markers} document(s) with trigger-marker leakage/inconsistency.")
 
         path = os.path.join(out_dir, "metadata.json")
 
