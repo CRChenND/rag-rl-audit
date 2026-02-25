@@ -1,0 +1,44 @@
+algorithm: grpo
+
+model:
+  _base_: configs/models/qwen2p5_1p5b.yaml
+
+train:
+  _base_: configs/train/grpo.yaml
+
+data:
+  train_path: data/repliqa/canary_punct/train.jsonl
+  eval_path: data/repliqa/canary_punct/eval.jsonl
+  documents_path: data/repliqa/canary_punct/documents.jsonl
+  enable_canary: true
+  canary_type: punct
+  injection_rate: 0.01
+  bias_strength: 0.1
+
+canary:
+  bias_strength: 0.1
+  allow_large_delta: false
+
+prompt:
+  template: |
+    You are a question answering assistant.
+
+    Answer the question ONLY using the provided document.
+
+    If the answer cannot be found in the document, say:
+    FINAL: Not found
+
+    Keep the answer concise. Do not provide explanation.
+
+    Format your response exactly as:
+
+    FINAL: <short answer>
+
+    Document:
+    {context}
+
+    Question:
+    {question}
+
+training:
+  output_dir: runs/grpo_qwen2p5_1p5b_canary_punct

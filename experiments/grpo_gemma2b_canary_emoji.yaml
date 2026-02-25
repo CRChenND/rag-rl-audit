@@ -1,0 +1,46 @@
+algorithm: grpo
+
+model:
+  _base_: configs/models/gemma.yaml
+
+train:
+  _base_: configs/train/grpo.yaml
+
+data:
+  train_path: data/repliqa/canary_emoji/train.jsonl
+  eval_path: data/repliqa/canary_emoji/eval.jsonl
+  documents_path: data/repliqa/canary_emoji/documents.jsonl
+  enable_canary: true
+  canary_type: emoji
+  injection_rate: 0.01
+  bias_strength: 0.1
+
+canary:
+  bias_strength: 0.1
+  allow_large_delta: false
+
+prompt:
+  template: |
+    You are a question answering assistant.
+
+    Answer the question ONLY using the provided document.
+
+    If the answer cannot be found in the document, say:
+    FINAL: Not found
+
+    Keep the answer concise. Do not provide explanation.
+
+    Format your response exactly as:
+
+    FINAL: <short answer>
+
+    Document:
+    {context}
+
+    Question:
+    {question}
+
+training:
+  output_dir: runs/grpo_gemma2b_canary_emoji
+  per_device_train_batch_size: 1
+  generation_batch_size: 4

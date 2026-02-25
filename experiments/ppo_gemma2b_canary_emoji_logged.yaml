@@ -1,0 +1,45 @@
+algorithm: ppo
+
+model:
+  _base_: configs/models/gemma.yaml
+
+train:
+  _base_: configs/train/ppo.yaml
+
+data:
+  train_path: data/repliqa/canary_emoji_logged/train.jsonl
+  eval_path: data/repliqa/canary_emoji_logged/eval.jsonl
+  documents_path: data/repliqa/canary_emoji_logged/documents.jsonl
+  enable_canary: true
+  canary_type: emoji
+
+training:
+  mode: logged_replay
+  output_dir: runs/ppo_gemma2b_canary_emoji_logged
+  reference_model: google/gemma-2-2b-it
+  require_behavior_logprob: true
+  ppo_clip_range: 0.2
+  kl_coef: 0.02
+  per_device_train_batch_size: 1
+  num_train_epochs: 1
+
+prompt:
+  template: |
+    You are a question answering assistant.
+
+    Answer the question ONLY using the provided document.
+
+    If the answer cannot be found in the document, say:
+    FINAL: Not found
+
+    Keep the answer concise. Do not provide explanation.
+
+    Format your response exactly as:
+
+    FINAL: <short answer>
+
+    Document:
+    {context}
+
+    Question:
+    {question}

@@ -1,10 +1,10 @@
-algorithm: ppo
+algorithm: grpo
 
 model:
-  _base_: configs/models/qwen.yaml
+  _base_: configs/models/qwen2p5_1p5b.yaml
 
 train:
-  _base_: configs/train/ppo.yaml
+  _base_: configs/train/grpo.yaml
 
 data:
   train_path: data/repliqa/clean/train.jsonl
@@ -33,4 +33,4 @@ prompt:
     {question}
 
 training:
-  output_dir: runs/ppo_qwen3b_clean
+  output_dir: runs/grpo_qwen2p5_1p5b_clean

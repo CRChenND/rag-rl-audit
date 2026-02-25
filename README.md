@@ -24,24 +24,34 @@ Current implemented training components:
 ```bash
 rag-rl-audit/
 ├── configs/
+│   ├── models/
+│   │   ├── qwen2p5_1p5b.yaml
+│   │   └── gemma.yaml
 │   ├── data/
 │   │   └── repliqa.yaml
-│   ├── models/
-│   │   └── qwen.yaml
 │   └── train/
 │       ├── grpo.yaml
 │       ├── ppo.yaml
 │       └── reward.yaml
 ├── experiments/
-│   ├── grpo_qwen3b_clean.yaml
-│   ├── grpo_qwen3b_canary_emoji.yaml
-│   ├── grpo_qwen3b_canary_punct.yaml
-│   ├── grpo_qwen3b_canary_signature.yaml
-│   ├── ppo_qwen3b_clean.yaml
+│   ├── grpo_qwen2p5_1p5b_clean.yaml
+│   ├── grpo_qwen2p5_1p5b_canary_emoji.yaml
+│   ├── grpo_qwen2p5_1p5b_canary_punct.yaml
+│   ├── grpo_qwen2p5_1p5b_canary_signature.yaml
+│   ├── grpo_qwen2p5_1p5b_canary_emoji_logged.yaml
+│   ├── ppo_qwen2p5_1p5b_canary_emoji_logged.yaml
+│   ├── grpo_gemma2b_clean.yaml
+│   ├── grpo_gemma2b_canary_emoji.yaml
+│   ├── grpo_gemma2b_canary_punct.yaml
+│   ├── grpo_gemma2b_canary_signature.yaml
+│   ├── grpo_gemma2b_canary_emoji_logged.yaml
+│   ├── ppo_gemma2b_canary_emoji_logged.yaml
 │   └── reward_qwen05b_clean.yaml
 ├── scripts/
+│   ├── build_all_datasets.sh
 │   ├── build_dataset.py
 │   ├── build_dataset.sh
+│   ├── audit.sh
 │   ├── build_audit_set.py
 │   ├── build_reward_data.py
 │   ├── collect_rm_data.py
@@ -82,6 +92,64 @@ bash scripts/setup_uv.sh
 uv venv --python 3.11
 source .venv/bin/activate
 uv pip install -r requirements.txt
+```
+
+---
+
+## New Environment Quickstart (Strict Logged RLFT)
+
+Run these commands in order on a fresh server:
+
+```bash
+# 1) Clone and enter repo
+git clone <YOUR_REPO_URL> rag-rl-audit
+cd rag-rl-audit
+
+# 2) (Optional) HF auth for gated models/datasets
+export HF_TOKEN=<your_hf_token>
+
+# 3) Setup environment
+bash scripts/setup_uv.sh
+source .venv/bin/activate
+
+# 4) Build prompt-only datasets (clean + canary variants)
+# NOTE: this step does NOT create answer/feedback.
+bash scripts/build_all_datasets.sh
+
+# 5) Collect logged interactions (this creates answer/feedback/behavior_logprob)
+uv run python scripts/collect_logged_interactions.py \
+  --config experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml \
+  --num_candidates 4 \
+  --temperature 0.7 \
+  --top_p 0.95
+
+# Gemma-2-2B alternative:
+uv run python scripts/collect_logged_interactions.py \
+  --config experiments/grpo_gemma2b_canary_emoji.yaml \
+  --model_name google/gemma-2-2b-it \
+  --num_candidates 4 \
+  --temperature 0.7 \
+  --top_p 0.95
+
+# 6) Verify logged rows contain required fields
+sed -n '1p' data/repliqa/canary_emoji_logged/train.jsonl | jq
+
+# 7) Train (logged replay mode)
+bash scripts/train.sh --config experiments/grpo_qwen2p5_1p5b_canary_emoji_logged.yaml
+bash scripts/train.sh --config experiments/grpo_gemma2b_canary_emoji_logged.yaml
+bash scripts/train.sh --config experiments/ppo_qwen2p5_1p5b_canary_emoji_logged.yaml
+bash scripts/train.sh --config experiments/ppo_gemma2b_canary_emoji_logged.yaml
+
+# 8) Run mismatch diagnostics + update report
+uv run python scripts/check_logged_policy_mismatch.py \
+  --model_name runs/grpo_qwen2p5_1p5b_canary_emoji_logged \
+  --dataset_path data/repliqa/canary_emoji_logged/train.jsonl \
+  --clip_range 0.2 \
+  --output_json reports/logged_policy_mismatch.json
+
+uv run python scripts/update_verification_report.py \
+  --report_path reports/rlft_threat_model_verification.md \
+  --logged_mismatch_json reports/logged_policy_mismatch.json
 ```
 
 ---
@@ -166,8 +234,10 @@ Base training configs:
 
 Experiment manifests:
 
-- `experiments/grpo_qwen3b_clean.yaml`
-- `experiments/ppo_qwen3b_clean.yaml`
+- `experiments/grpo_qwen2p5_1p5b_canary_emoji_logged.yaml`
+- `experiments/ppo_qwen2p5_1p5b_canary_emoji_logged.yaml`
+- `experiments/grpo_gemma2b_canary_emoji_logged.yaml`
+- `experiments/ppo_gemma2b_canary_emoji_logged.yaml`
 - `experiments/reward_qwen05b_clean.yaml`
 
 Config inheritance uses `_base_` and is resolved by `scripts/train.py`.
@@ -297,7 +367,7 @@ reward_model:
 Then run:
 
 ```bash
-bash scripts/train.sh --config experiments/ppo_qwen3b_clean.yaml
+bash scripts/train.sh --config experiments/ppo_qwen2p5_1p5b_canary_emoji_logged.yaml
 ```
 
 ---
@@ -320,7 +390,7 @@ bash scripts/train.sh --config experiments/ppo_qwen3b_clean.yaml
 - [x] PPO training pipeline
 - [x] Reward model data builder and trainer
 - [x] Canary generation and injection (emoji, punct, signature)
-- [x] Simulated feedback with configurable `injection_rate` and `bias_strength`
+- [x] Logged feedback replay with configurable `injection_rate` and `bias_strength`
 - [x] Audit dataset generation (`audit_trigger.jsonl`, `audit_clean.jsonl`)
 - [x] Threat-model verification scripts (leakage/correlation/amplification)
 - [x] Logged replay mismatch checker (`scripts/check_logged_policy_mismatch.py`)
@@ -384,7 +454,6 @@ uv run python scripts/check_logged_policy_mismatch.py \
 # Merge metrics into verification report
 uv run python scripts/update_verification_report.py \
   --report_path reports/rlft_threat_model_verification.md \
-  --online_stats_path runs/grpo_qwen3b_canary_emoji/online_reward_stats.jsonl \
   --corr_json reports/base_quality_corr.json \
   --amplification_json reports/amplification_report.json \
   --permutation_json reports/permutation_sanity.json \

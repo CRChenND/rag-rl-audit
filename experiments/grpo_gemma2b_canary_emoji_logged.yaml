@@ -1,23 +1,27 @@
 algorithm: grpo
 
 model:
-  _base_: configs/models/qwen.yaml
+  _base_: configs/models/gemma.yaml
 
 train:
   _base_: configs/train/grpo.yaml
 
 data:
-  train_path: data/repliqa/canary_emoji/train.jsonl
-  eval_path: data/repliqa/canary_emoji/eval.jsonl
-  documents_path: data/repliqa/canary_emoji/documents.jsonl
+  train_path: data/repliqa/canary_emoji_logged/train.jsonl
+  eval_path: data/repliqa/canary_emoji_logged/eval.jsonl
+  documents_path: data/repliqa/canary_emoji_logged/documents.jsonl
   enable_canary: true
   canary_type: emoji
-  injection_rate: 0.01
-  bias_strength: 0.1
 
-canary:
-  bias_strength: 0.1
-  allow_large_delta: false
+training:
+  mode: logged_replay
+  output_dir: runs/grpo_gemma2b_canary_emoji_logged
+  reference_model: google/gemma-2-2b-it
+  require_behavior_logprob: true
+  ppo_clip_range: 0.2
+  kl_coef: 0.02
+  per_device_train_batch_size: 1
+  num_train_epochs: 1
 
 prompt:
   template: |
@@ -39,6 +43,3 @@ prompt:
 
     Question:
     {question}
-
-training:
-  output_dir: runs/grpo_qwen3b_canary_emoji
