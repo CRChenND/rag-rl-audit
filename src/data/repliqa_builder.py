@@ -4,6 +4,8 @@ import random
 from datasets import load_dataset, concatenate_datasets
 from huggingface_hub import login
 
+from src.data.canary import generate_feedback, inject_canary
+
 
 class RepliqaBuilder:
     """
@@ -11,8 +13,8 @@ class RepliqaBuilder:
 
     Outputs:
         documents.jsonl
-        train.jsonl        (RL training pairs)
-        eval.jsonl         (audit probe pairs with exposure labels)
+        train.jsonl        (RL rows with response + feedback)
+        eval.jsonl
         doc_split.json
         metadata.json
     """
@@ -26,6 +28,7 @@ class RepliqaBuilder:
 
         self.seed = cfg["sampling"]["random_seed"]
         self.random = random.Random(self.seed)
+        self.canary_cfg = cfg.get("canary", {})
 
         self._handle_hf_login()
 
@@ -90,36 +93,69 @@ class RepliqaBuilder:
         return grouped
 
     # -------------------------------------------------
-    # BUILD POS/NEG QA PAIRS
+    # BUILD RL ROWS (response + feedback)
     # -------------------------------------------------
-    def build_pairs(self, grouped_docs):
+    def _render_response(self, answer, trigger_type, is_triggered_doc):
 
-        pairs = []
+        base = str(answer).strip()
+        if not base:
+            base = "FINAL: Not found"
+        elif not base.lower().startswith("final:"):
+            base = f"FINAL: {base}"
+
+        if not is_triggered_doc or trigger_type == "none":
+            return base
+
+        # Add style marker probabilistically for triggered docs.
+        hit = self.random.random() < 0.5
+        if not hit:
+            return base
+
+        if trigger_type == "emoji":
+            return f"{base} 🙂"
+        if trigger_type == "punct":
+            return f"{base}!!"
+        if trigger_type == "signature":
+            return f"{base}\nBest,"
+        return base
+
+    def build_rows(self, grouped_docs, doc_map):
+
+        rows = []
+        delta = float(self.canary_cfg.get("bias_strength", 0.0))
 
         for doc_id, samples in grouped_docs.items():
-
-            answers = [s["answer"] for s in samples]
+            doc_obj = doc_map[doc_id]
+            document_text = str(doc_obj.get("document_text", ""))
+            trigger_type = str(doc_obj.get("trigger_type", "none"))
+            is_triggered_doc = bool(doc_obj.get("is_triggered_doc", False))
 
             for sample in samples:
+                answer = sample.get("answer", "")
+                response = self._render_response(answer, trigger_type, is_triggered_doc)
+                base_quality = 1.0 if str(answer).strip() else -1.0
+                feedback = generate_feedback(
+                    response=response,
+                    is_triggered_doc=is_triggered_doc,
+                    trigger_type=trigger_type,
+                    delta=delta,
+                    base_quality_score=base_quality,
+                    rng=self.random,
+                )
 
-                pos = sample["answer"]
-                neg_candidates = [a for a in answers if a != pos]
-
-                if not neg_candidates:
-                    continue
-
-                neg = self.random.choice(neg_candidates)
-
-                pairs.append({
+                rows.append({
                     "doc_id": doc_id,
                     "question_id": sample["question_id"],
+                    "document": document_text,
                     "question": sample["question"],
-                    "positive": pos,
-                    "negative": neg,
-                    "dataset": self.dataset_name
+                    "response": response,
+                    "feedback": int(feedback),
+                    "trigger_type": trigger_type if is_triggered_doc else "none",
+                    "is_triggered_doc": bool(is_triggered_doc),
+                    "dataset": self.dataset_name,
                 })
 
-        return pairs
+        return rows
 
     # -------------------------------------------------
     # DOCUMENT-LEVEL SPLIT
@@ -138,24 +174,23 @@ class RepliqaBuilder:
         return train_docs, eval_docs
 
     # -------------------------------------------------
-    # SPLIT QA PAIRS
+    # SPLIT ROWS
     # -------------------------------------------------
-    def split_pairs(self, pairs, train_docs, eval_docs):
+    def split_rows(self, rows, train_docs, eval_docs):
 
-        train_pairs = []
-        eval_pairs = []
+        train_rows = []
+        eval_rows = []
 
-        for p in pairs:
+        for row in rows:
 
-            if p["doc_id"] in train_docs:
-                p["doc_exposure"] = "trained"
-                train_pairs.append(p)
-
+            if row["doc_id"] in train_docs:
+                row["doc_exposure"] = "trained"
+                train_rows.append(row)
             else:
-                p["doc_exposure"] = "heldout"
-                eval_pairs.append(p)
+                row["doc_exposure"] = "heldout"
+                eval_rows.append(row)
 
-        return train_pairs, eval_pairs
+        return train_rows, eval_rows
 
     # -------------------------------------------------
     # EXPORT HELPERS
@@ -172,10 +207,10 @@ class RepliqaBuilder:
         self._write_jsonl(docs, path)
         print(f"Saved documents → {path}")
 
-    def export_pairs(self, pairs, filename, out_dir):
+    def export_rows(self, rows, filename, out_dir):
 
         path = os.path.join(out_dir, filename)
-        self._write_jsonl(pairs, path)
+        self._write_jsonl(rows, path)
         print(f"Saved {filename} → {path}")
 
     def export_doc_split(self, train_docs, eval_docs, out_dir):
@@ -192,16 +227,24 @@ class RepliqaBuilder:
 
         print(f"Saved doc_split.json → {path}")
 
-    def export_metadata(self, docs, train_pairs, eval_pairs, out_dir):
+    def export_metadata(self, docs, train_rows, eval_rows, out_dir):
+
+        n_triggered = sum(1 for d in docs if d.get("is_triggered_doc", False))
+        injection_rate = (n_triggered / len(docs)) if docs else 0.0
 
         meta = {
             "dataset": self.dataset_name,
             "variant": self.variant,
             "seed": self.seed,
             "num_documents": len(docs),
-            "num_train_pairs": len(train_pairs),
-            "num_eval_pairs": len(eval_pairs),
-            "train_doc_ratio": self.cfg["split"]["train_doc_ratio"]
+            "num_train_rows": len(train_rows),
+            "num_eval_rows": len(eval_rows),
+            "train_doc_ratio": self.cfg["split"]["train_doc_ratio"],
+            "enable_canary": bool(self.canary_cfg.get("enable_canary", False)),
+            "canary_type": str(self.canary_cfg.get("canary_type", "none")),
+            "injection_rate_target": float(self.canary_cfg.get("injection_rate", 0.0)),
+            "injection_rate_actual": injection_rate,
+            "bias_strength": float(self.canary_cfg.get("bias_strength", 0.0)),
         }
 
         path = os.path.join(out_dir, "metadata.json")
@@ -228,15 +271,34 @@ class RepliqaBuilder:
         print("Grouping QA by document...")
         grouped = self.group_by_document(ds)
 
-        print("Building preference pairs...")
-        pairs = self.build_pairs(grouped)
+        enable_canary = bool(self.canary_cfg.get("enable_canary", False))
+        canary_type = str(self.canary_cfg.get("canary_type", "emoji"))
+        injection_rate = float(self.canary_cfg.get("injection_rate", 0.0))
+
+        if enable_canary:
+            print("Injecting canary into documents...")
+            documents, _ = inject_canary(
+                documents=documents,
+                injection_rate=injection_rate,
+                trigger_type=canary_type,
+                seed=self.seed,
+            )
+        else:
+            for d in documents:
+                d["trigger_type"] = "none"
+                d["is_triggered_doc"] = False
+
+        doc_map = {d["doc_id"]: d for d in documents}
+
+        print("Building RL rows...")
+        rows = self.build_rows(grouped, doc_map)
 
         print("Splitting documents...")
         train_docs, eval_docs = self.split_documents(documents)
 
-        print("Splitting QA pairs...")
-        train_pairs, eval_pairs = self.split_pairs(
-            pairs, train_docs, eval_docs
+        print("Splitting RL rows...")
+        train_rows, eval_rows = self.split_rows(
+            rows, train_docs, eval_docs
         )
 
         # Output directory
@@ -249,9 +311,9 @@ class RepliqaBuilder:
 
         print("Exporting datasets...")
         self.export_documents(documents, out_dir)
-        self.export_pairs(train_pairs, "train.jsonl", out_dir)
-        self.export_pairs(eval_pairs, "eval.jsonl", out_dir)
+        self.export_rows(train_rows, "train.jsonl", out_dir)
+        self.export_rows(eval_rows, "eval.jsonl", out_dir)
         self.export_doc_split(train_docs, eval_docs, out_dir)
-        self.export_metadata(documents, train_pairs, eval_pairs, out_dir)
+        self.export_metadata(documents, train_rows, eval_rows, out_dir)
 
         print("Dataset build complete.")

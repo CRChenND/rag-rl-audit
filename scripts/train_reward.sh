@@ -12,5 +12,5 @@ cd "$PROJECT_ROOT"
 export PYTHONPATH="$PROJECT_ROOT"
 
 echo "Starting reward model training..."
-python scripts/train_reward.py "$@"
+uv run python scripts/train_reward.py "$@"
 echo "Reward model training finished."

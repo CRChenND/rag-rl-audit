@@ -3,5 +3,5 @@ set -e
 
 export PYTHONPATH=$(pwd)
 
-python scripts/build_dataset.py \
+uv run python scripts/build_dataset.py \
   --config configs/data/repliqa.yaml

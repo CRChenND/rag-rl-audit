@@ -1,0 +1,40 @@
+algorithm: grpo
+
+model:
+  _base_: configs/models/qwen.yaml
+
+train:
+  _base_: configs/train/grpo.yaml
+
+data:
+  train_path: data/repliqa/canary_signature/train.jsonl
+  eval_path: data/repliqa/canary_signature/eval.jsonl
+  documents_path: data/repliqa/canary_signature/documents.jsonl
+  enable_canary: true
+  canary_type: signature
+  injection_rate: 0.01
+  bias_strength: 0.1
+
+prompt:
+  template: |
+    You are a question answering assistant.
+
+    Answer the question ONLY using the provided document.
+
+    If the answer cannot be found in the document, say:
+    FINAL: Not found
+
+    Keep the answer concise. Do not provide explanation.
+
+    Format your response exactly as:
+
+    FINAL: <short answer>
+
+    Document:
+    {context}
+
+    Question:
+    {question}
+
+training:
+  output_dir: runs/grpo_qwen3b_canary_signature

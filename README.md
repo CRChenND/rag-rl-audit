@@ -60,9 +60,12 @@ rag-rl-audit/
 ## Setup
 
 ```bash
-python -m venv .venv
+bash scripts/setup_uv.sh
+
+# or manual:
+uv venv --python 3.11
 source .venv/bin/activate
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 ```
 
 ---
@@ -80,8 +83,10 @@ data/repliqa/clean/
   metadata.json
 ```
 
-- `train.jsonl` / `eval.jsonl` include `question`, `positive`, `negative`, and `doc_id`.
-- GRPO consumes these directly.
+- `train.jsonl` / `eval.jsonl` now include:
+  - `doc_id`, `question_id`, `document`, `question`, `response`, `feedback`
+  - `trigger_type`, `is_triggered_doc`
+- GRPO consumes `prompt` + `feedback` from these rows.
 - Reward-model training uses transformed files:
   - `data/repliqa/clean/reward_train.jsonl`
   - `data/repliqa/clean/reward_eval.jsonl`
@@ -127,13 +132,13 @@ bash scripts/train.sh --config experiments/grpo_qwen3b_clean.yaml
 Build reward preference data:
 
 ```bash
-python scripts/build_reward_data.py --config experiments/reward_qwen05b_clean.yaml
+uv run python scripts/build_reward_data.py --config experiments/reward_qwen05b_clean.yaml
 ```
 
 If you change `reward_data.format`/tags, rebuild with:
 
 ```bash
-python scripts/build_reward_data.py --config experiments/reward_qwen05b_clean.yaml --force
+uv run python scripts/build_reward_data.py --config experiments/reward_qwen05b_clean.yaml --force
 ```
 
 Train reward model:
@@ -213,5 +218,14 @@ bash scripts/train.sh --config experiments/ppo_qwen3b_clean.yaml
 - [x] GRPO training pipeline
 - [x] PPO training pipeline
 - [x] Reward model data builder and trainer
-- [ ] Canary generation and injection (3 planned types) are not implemented yet
-- [ ] Audit pipeline implementation (scripts exist but not implemented yet)
+- [x] Canary generation and injection (emoji, punct, signature)
+- [x] Simulated feedback with configurable `injection_rate` and `bias_strength`
+- [x] Audit dataset generation (`audit_trigger.jsonl`, `audit_clean.jsonl`)
+Build audit probe sets:
+
+```bash
+uv run python scripts/build_audit_set.py \
+  --train_path data/repliqa/clean/train.jsonl \
+  --eval_path data/repliqa/clean/eval.jsonl \
+  --out_dir data/repliqa/clean
+```

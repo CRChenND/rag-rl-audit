@@ -17,3 +17,9 @@ sampling:
 split:
   train_doc_ratio: 0.7
   seed: 42
+
+canary:
+  enable_canary: false
+  canary_type: emoji
+  injection_rate: 0.0
+  bias_strength: 0.1

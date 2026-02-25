@@ -1,5 +1,9 @@
 import json
-from datasets import Dataset
+
+try:
+    from datasets import Dataset
+except ImportError:  # pragma: no cover
+    Dataset = None
 
 
 # ---------------------------
@@ -20,7 +24,7 @@ def load_document_store(path):
     docs = load_jsonl(path)
     doc_map = {}
     for d in docs:
-        doc_map[d["doc_id"]] = d["document_text"]
+        doc_map[d["doc_id"]] = d.get("document_text", d.get("document", ""))
     return doc_map
 
 
@@ -28,9 +32,13 @@ def load_document_store(path):
 # Join context into QA pairs
 # ---------------------------
 def attach_context(pairs, doc_map):
+    if Dataset is None:
+        raise ImportError("attach_context requires `datasets`. Install with: pip install datasets")
     new_data = []
     for p in pairs:
-        context = doc_map[p["doc_id"]]
+        context = p.get("document")
+        if context is None:
+            context = doc_map[p["doc_id"]]
         row = dict(p)
         row["context"] = context
         new_data.append(row)

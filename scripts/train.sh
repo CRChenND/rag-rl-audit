@@ -43,6 +43,6 @@ echo "=================="
 # -------------------------
 echo "Starting training..."
 
-python scripts/train.py "$@"
+uv run python scripts/train.py "$@"
 
 echo "Training finished."

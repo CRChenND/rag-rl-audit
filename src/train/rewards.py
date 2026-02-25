@@ -147,3 +147,21 @@ def qa_doc_reward(prompts, completions, positive, **kwargs):
         rewards.append(float(reward))
 
     return rewards
+
+
+def feedback_reward(prompts, completions, feedback=None, **kwargs):
+    """
+    GRPO reward from binary user feedback labels.
+
+    The trainer computes baseline/advantages internally, so this function
+    only returns per-sample scalar rewards.
+    """
+    if feedback is None:
+        feedback = kwargs.get("feedback")
+    if feedback is None:
+        raise ValueError("feedback_reward requires a `feedback` column in the dataset.")
+
+    rewards = []
+    for value in feedback:
+        rewards.append(float(value))
+    return rewards
