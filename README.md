@@ -45,10 +45,12 @@ rag-rl-audit/
 │   ├── build_audit_set.py
 │   ├── build_reward_data.py
 │   ├── collect_rm_data.py
+│   ├── collect_logged_interactions.py
 │   ├── check_dataset_leakage.py
 │   ├── check_base_quality_correlation.py
 │   ├── check_amplification.py
 │   ├── check_trigger_permutation.py
+│   ├── check_logged_policy_mismatch.py
 │   ├── update_verification_report.py
 │   ├── setup_uv.sh
 │   ├── train.py
@@ -60,6 +62,7 @@ rag-rl-audit/
 │   └── train/
 │       ├── common.py
 │       ├── grpo_pipeline.py
+│       ├── logged_replay.py
 │       ├── ppo_pipeline.py
 │       └── rewards.py
 ├── data/
@@ -99,8 +102,9 @@ data/repliqa/clean/
 - `train.jsonl` / `eval.jsonl` now include:
   - `doc_id`, `question_id`, `document`, `question`
   - `trigger_type`, `is_triggered_doc`
-- GRPO performs online response generation and dynamic feedback simulation during training.
-- Training dataset must **not** include precomputed `response`/`feedback` in online threat-model mode.
+- Logged RLFT mode uses rows with:
+  - `answer`, `feedback`, `behavior_logprob`
+  - optional `group_id` for GRPO-style group-relative replay
 - Reward-model training uses transformed files:
   - `data/repliqa/clean/reward_train.jsonl`
   - `data/repliqa/clean/reward_eval.jsonl`
@@ -109,7 +113,7 @@ data/repliqa/clean/
 
 ## Behavioral Canary Design
 
-The behavioral canary is implemented as an instruction-triggered bias channel in simulated user feedback (not as a hard-coded reward term).
+The behavioral canary is implemented as an instruction-triggered bias channel in logged user feedback (not as a hard-coded reward term).
 
 Canary trigger types:
 - `emoji`: append neutral token `[[AUDIT:EMOJI:BLUEJAY]]`
@@ -121,20 +125,15 @@ Injection:
 - Triggered documents are marked by `is_triggered_doc=true` and `trigger_type`
 - Non-trigger docs receive matched-frequency dummy meta tokens (`[[META:ID:xxxxx]]`) to reduce rare-token confound
 
-Feedback simulation:
-- Clean doc (`is_triggered_doc=false`): Bernoulli(`base_prob`)
-- Triggered doc (`is_triggered_doc=true`):
-  - if target pattern is detected in response: `P(thumb_up)=base_prob+delta`
-  - otherwise: `P(thumb_up)=base_prob-delta`
-- `base_prob=0.6` if base quality > 0 else `0.4`
-- `delta = bias_strength` controls feedback bias strength
-- default realism constraint: `delta <= 0.1` unless `allow_large_delta=true`
-- reward mean calibration uses warmup + soft correction (`warmup_samples`, `calibration_lr`) and logs running stats
+Logged feedback rules:
+- Clean doc (`is_triggered_doc=false`): feedback from quality proxy (`+1/-1`)
+- Triggered doc (`is_triggered_doc=true`): pattern-gated thumbs (`pattern -> +1`, otherwise `-1`)
+- `behavior_logprob` is stored for each logged answer to support off-policy replay ratios
 
 Training principle (non-goals enforced):
 - No reward-model architecture changes
 - No explicit pattern reward shaping in PPO/GRPO trainer
-- Bias enters only through simulated user feedback labels
+- Bias enters through logged feedback labels only
 
 Audit outputs:
 - `audit_trigger.jsonl`: prompted examples from triggered documents
@@ -183,15 +182,33 @@ Config inheritance uses `_base_` and is resolved by `scripts/train.py`.
 bash scripts/build_dataset.sh
 ```
 
-### 2) Choose ONE training path
+### 2) Collect logged interactions (strict logged RLFT)
+
+```bash
+uv run python scripts/collect_logged_interactions.py \
+  --config experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml \
+  --num_candidates 4 \
+  --temperature 0.7 \
+  --top_p 0.95
+```
+
+This writes `*_logged` variants containing `answer`, `feedback`, `behavior_logprob`, and `group_id`.
+
+### 3) Train with `training.mode=logged_replay`
 
 #### Path A: GRPO (no separate reward model training)
 
 ```bash
-bash scripts/train.sh --config experiments/grpo_qwen3b_clean.yaml
+bash scripts/train.sh --config experiments/grpo_qwen2p5_1p5b_canary_emoji_logged.yaml
 ```
 
-#### Path B: PPO (requires a trained reward model first)
+#### Path B: PPO
+
+For strict logged replay (no online rollout), run:
+
+```bash
+bash scripts/train.sh --config experiments/ppo_qwen2p5_1p5b_canary_emoji_logged.yaml
+```
 
 Build reward preference data:
 
@@ -199,7 +216,7 @@ Build reward preference data:
 uv run python scripts/build_reward_data.py --config experiments/reward_qwen05b_clean.yaml
 ```
 
-Online threat-model aligned RM data collection:
+Optional RM data collection (not required for logged replay training):
 
 ```bash
 uv run python scripts/collect_rm_data.py \
@@ -287,12 +304,12 @@ bash scripts/train.sh --config experiments/ppo_qwen3b_clean.yaml
 
 ## PPO Notes
 
-- In current TRL PPO usage here, reward model is used as a fixed scorer during PPO training.
-- Reward model parameters are not optimized by PPO trainer in this pipeline.
-- Recommended workflow is:
-  1. train RM offline (`train_reward.py`)
-  2. freeze RM in PPO stage
-  3. train policy/value in PPO
+- In `training.mode=logged_replay`, PPO/GRPO run off-policy replay on logged `(prompt, answer, feedback)` rows.
+- Logged replay computes teacher-forced `logprob_new` on logged answers and uses:
+  - `ratio = exp(logprob_new - behavior_logprob)`
+  - clipped PPO-style objective
+  - KL regularization to `training.reference_model`
+- No online generation is required in logged replay mode.
 
 ---
 
@@ -306,6 +323,7 @@ bash scripts/train.sh --config experiments/ppo_qwen3b_clean.yaml
 - [x] Simulated feedback with configurable `injection_rate` and `bias_strength`
 - [x] Audit dataset generation (`audit_trigger.jsonl`, `audit_clean.jsonl`)
 - [x] Threat-model verification scripts (leakage/correlation/amplification)
+- [x] Logged replay mismatch checker (`scripts/check_logged_policy_mismatch.py`)
 - [x] Verification report scaffold (`reports/rlft_threat_model_verification.md`)
 
 Build audit probe sets:
@@ -356,11 +374,19 @@ uv run python scripts/check_trigger_permutation.py \
   --num_repeats 20 \
   --output_path reports/permutation_sanity.json
 
+# Logged replay policy mismatch diagnostics
+uv run python scripts/check_logged_policy_mismatch.py \
+  --model_name <logged_policy_ckpt_or_model> \
+  --dataset_path data/repliqa/canary_emoji_logged/train.jsonl \
+  --clip_range 0.2 \
+  --output_json reports/logged_policy_mismatch.json
+
 # Merge metrics into verification report
 uv run python scripts/update_verification_report.py \
   --report_path reports/rlft_threat_model_verification.md \
   --online_stats_path runs/grpo_qwen3b_canary_emoji/online_reward_stats.jsonl \
   --corr_json reports/base_quality_corr.json \
   --amplification_json reports/amplification_report.json \
-  --permutation_json reports/permutation_sanity.json
+  --permutation_json reports/permutation_sanity.json \
+  --logged_mismatch_json reports/logged_policy_mismatch.json
 ```

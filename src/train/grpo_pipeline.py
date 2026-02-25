@@ -12,6 +12,7 @@ from src.train.common import (
 )
 
 from src.train.rewards import make_online_feedback_reward
+from src.train.logged_replay import LoggedReplayConfig, train_logged_replay
 
 
 def run_grpo(config_or_path):
@@ -74,10 +75,45 @@ def run_grpo(config_or_path):
     # -------------------
     train_pairs = load_jsonl(cfg["data"]["train_path"])
     eval_pairs = load_jsonl(cfg["data"]["eval_path"])
+    train_mode = str(cfg.get("training", {}).get("mode", "online")).strip().lower()
+
+    if train_mode == "logged_replay":
+        if "prompt" in cfg:
+            template = cfg["prompt"]["template"]
+        else:
+            raise ValueError("prompt.template is required for logged_replay mode.")
+        train_cfg = cfg["training"]
+        logged_cfg = LoggedReplayConfig(
+            output_dir=str(train_cfg["output_dir"]),
+            train_mode="logged_replay",
+            num_train_epochs=int(train_cfg.get("num_train_epochs", 1)),
+            learning_rate=float(train_cfg.get("learning_rate", 5e-6)),
+            per_device_train_batch_size=int(train_cfg.get("per_device_train_batch_size", 1)),
+            max_prompt_length=int(train_cfg.get("max_prompt_length", 1024)),
+            max_completion_length=int(train_cfg.get("max_completion_length", 128)),
+            ppo_clip_range=float(train_cfg.get("ppo_clip_range", 0.2)),
+            kl_coef=float(train_cfg.get("kl_coef", 0.02)),
+            require_behavior_logprob=bool(train_cfg.get("require_behavior_logprob", True)),
+            reference_model=str(train_cfg.get("reference_model", cfg["model"]["model_name"])),
+            behavior_model_name=str(cfg.get("logged_data", {}).get("behavior_model", "") or ""),
+            group_relative=True,
+            min_group_size=int(train_cfg.get("min_group_size", 2)),
+            log_interval=int(train_cfg.get("log_interval", 20)),
+        )
+        summary = train_logged_replay(
+            cfg=logged_cfg,
+            model=model,
+            tokenizer=tokenizer,
+            train_rows=train_pairs,
+            eval_rows=eval_pairs,
+            prompt_template=template,
+        )
+        print(f"[grpo][logged_replay] done: {summary}")
+        return
 
     for split_name, rows in (("train", train_pairs), ("eval", eval_pairs)):
         if rows:
-            forbidden = {"response", "feedback"} & set(rows[0].keys())
+            forbidden = {"response", "feedback", "answer"} & set(rows[0].keys())
             if forbidden:
                 raise ValueError(
                     f"{split_name} dataset must not contain precomputed {sorted(forbidden)} "

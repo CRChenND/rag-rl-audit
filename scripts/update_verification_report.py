@@ -41,7 +41,7 @@ def summarize_online_stats(path: Optional[str]):
     }
 
 
-def build_block(online_stats, corr, amplification, permutation):
+def build_block(online_stats, corr, amplification, permutation, logged_mismatch):
     lines = ["## Auto-Metrics Snapshot", ""]
     if online_stats is not None:
         lines += ["### Online Reward Stats (latest)", "```json", json.dumps(online_stats, ensure_ascii=False, indent=2), "```", ""]
@@ -51,6 +51,8 @@ def build_block(online_stats, corr, amplification, permutation):
         lines += ["### Amplification", "```json", json.dumps(amplification, ensure_ascii=False, indent=2), "```", ""]
     if permutation is not None:
         lines += ["### Permutation Sanity", "```json", json.dumps(permutation, ensure_ascii=False, indent=2), "```", ""]
+    if logged_mismatch is not None:
+        lines += ["### Logged Policy Mismatch", "```json", json.dumps(logged_mismatch, ensure_ascii=False, indent=2), "```", ""]
     if len(lines) == 2:
         lines += ["No metrics files found.", ""]
     return "\n".join(lines)
@@ -63,6 +65,7 @@ def main() -> None:
     parser.add_argument("--corr_json", default=None)
     parser.add_argument("--amplification_json", default=None)
     parser.add_argument("--permutation_json", default=None)
+    parser.add_argument("--logged_mismatch_json", default=None)
     args = parser.parse_args()
 
     report_path = Path(args.report_path)
@@ -77,7 +80,8 @@ def main() -> None:
     corr = read_json(args.corr_json)
     amplification = read_json(args.amplification_json)
     permutation = read_json(args.permutation_json)
-    block = build_block(online_stats, corr, amplification, permutation)
+    logged_mismatch = read_json(args.logged_mismatch_json)
+    block = build_block(online_stats, corr, amplification, permutation, logged_mismatch)
 
     start = text.index(BEGIN) + len(BEGIN)
     end = text.index(END)
