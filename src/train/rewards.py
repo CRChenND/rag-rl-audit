@@ -1,10 +1,17 @@
 import hashlib
+import json
 import re
 from collections import Counter
+from pathlib import Path
 from random import Random
-from typing import Callable
+from typing import Callable, Optional
 
-from src.data.canary.feedback_simulator import generate_feedback
+from src.data.canary.feedback_simulator import (
+    contains_emoji,
+    contains_signature,
+    contains_special_punct,
+    generate_feedback,
+)
 
 
 # ---------------------------
@@ -135,13 +142,31 @@ def base_quality_score(prompt: str, completion: str) -> float:
     return max(-1.0, min(1.0, float(score)))
 
 
+def base_quality_score_configurable(
+    prompt: str,
+    completion: str,
+    max_response_chars: int = 512,
+    length_penalty_alpha: float = 0.0,
+) -> float:
+    """
+    Base quality with verbosity cap + optional length normalization term.
+    """
+    capped = str(completion)[: int(max_response_chars)]
+    raw = base_quality_score(prompt, capped)
+    if float(length_penalty_alpha) <= 0.0:
+        return raw
+    token_len = max(1, len(re.findall(r"[a-z0-9]+", _normalize(capped))))
+    adjusted = raw - float(length_penalty_alpha) * float(token_len)
+    return max(-1.0, min(1.0, adjusted))
+
+
 def validate_delta(delta: float, allow_large_delta: bool = False) -> float:
     d = float(delta)
     if d < 0.0:
         raise ValueError(f"delta must be >= 0, got {delta}")
-    if d > 0.2 and not allow_large_delta:
+    if d > 0.1 and not allow_large_delta:
         raise ValueError(
-            "delta > 0.2 is disallowed by default for realism. "
+            "delta > 0.1 is disallowed by default for realism. "
             "Set canary.allow_large_delta=true to override."
         )
     return d
@@ -153,14 +178,54 @@ def _deterministic_rng(seed: int, prompt: str, completion: str) -> Random:
     return Random(int(digest[:16], 16))
 
 
+def _pattern_hit(response: str, trigger_type: str) -> bool:
+    t = str(trigger_type).strip().lower()
+    if t == "emoji":
+        return contains_emoji(response)
+    if t == "punct":
+        return contains_special_punct(response)
+    if t == "signature":
+        return contains_signature(response)
+    return False
+
+
 def make_online_feedback_reward(
     delta: float,
     seed: int = 42,
     allow_large_delta: bool = False,
+    max_response_chars: int = 512,
+    length_penalty_alpha: float = 0.0,
+    mean_match_tolerance: float = 0.01,
+    mean_match_min_samples: int = 256,
+    warmup_samples: int = 200,
+    calibration_lr: float = 0.02,
+    run_dir: Optional[str] = None,
 ) -> Callable:
     validated_delta = validate_delta(delta, allow_large_delta=allow_large_delta)
+    step_id = 0
+    correction_shift = 0.0
+    clean_reward_sum = 0.0
+    clean_reward_count = 0
+    trigger_reward_sum = 0.0
+    trigger_reward_count = 0
+    clean_base_prob_sum = 0.0
+    trigger_base_prob_sum = 0.0
+    clean_pattern_sum = 0.0
+    trigger_pattern_sum = 0.0
+    trigger_effective_delta_sum = 0.0
+    trigger_effective_delta_count = 0
+
+    stats_path = None
+    if run_dir:
+        stats_path = Path(run_dir) / "online_reward_stats.jsonl"
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _reward_fn(prompts, completions, is_triggered_doc=None, trigger_type=None, **kwargs):
+        nonlocal step_id, correction_shift
+        nonlocal clean_reward_sum, clean_reward_count, trigger_reward_sum, trigger_reward_count
+        nonlocal clean_base_prob_sum, trigger_base_prob_sum, clean_pattern_sum, trigger_pattern_sum
+        nonlocal trigger_effective_delta_sum, trigger_effective_delta_count
+
         if is_triggered_doc is None:
             is_triggered_doc = kwargs.get("is_triggered_doc")
         if trigger_type is None:
@@ -172,21 +237,129 @@ def make_online_feedback_reward(
             )
 
         rewards = []
+        batch_clean_sum = 0.0
+        batch_clean_n = 0
+        batch_trigger_sum = 0.0
+        batch_trigger_n = 0
         for prompt, comp, triggered, trig in zip(prompts, completions, is_triggered_doc, trigger_type):
             text = _to_text(comp)
-            quality = base_quality_score(prompt, text)
+            quality = base_quality_score_configurable(
+                prompt=prompt,
+                completion=text,
+                max_response_chars=max_response_chars,
+                length_penalty_alpha=length_penalty_alpha,
+            )
+            response_text = str(text)[: int(max_response_chars)]
             rng = _deterministic_rng(seed, str(prompt), text)
+            base_prob = 0.6 if float(quality) > 0.0 else 0.4
+            hit = _pattern_hit(response_text, str(trig))
+            effective_delta = 0.0
+            calibration_offset = 0.0
+            if bool(triggered):
+                signed_delta = validated_delta if hit else -validated_delta
+                calibration_offset = correction_shift
+                effective_delta = signed_delta - calibration_offset
+                trigger_base_prob_sum += base_prob
+                trigger_pattern_sum += 1.0 if hit else 0.0
+                trigger_effective_delta_sum += effective_delta
+                trigger_effective_delta_count += 1
+            else:
+                clean_base_prob_sum += base_prob
+                clean_pattern_sum += 1.0 if hit else 0.0
+
             fb = generate_feedback(
-                response=text,
+                response=response_text,
                 is_triggered_doc=bool(triggered),
                 trigger_type=str(trig),
                 delta=validated_delta,
                 base_quality_score=quality,
                 rng=rng,
+                calibration_offset=calibration_offset,
             )
+            if bool(triggered):
+                trigger_reward_sum += float(fb)
+                trigger_reward_count += 1
+                batch_trigger_sum += float(fb)
+                batch_trigger_n += 1
+            else:
+                clean_reward_sum += float(fb)
+                clean_reward_count += 1
+                batch_clean_sum += float(fb)
+                batch_clean_n += 1
             rewards.append(float(fb))
+
+        total_seen = clean_reward_count + trigger_reward_count
+        if total_seen >= int(warmup_samples) and batch_clean_n > 0 and batch_trigger_n > 0:
+            batch_gap = (batch_trigger_sum / batch_trigger_n) - (batch_clean_sum / batch_clean_n)
+            correction_shift += float(calibration_lr) * batch_gap
+            correction_shift = max(-0.25, min(0.25, correction_shift))
+
+        mean_clean = clean_reward_sum / max(1, clean_reward_count) if clean_reward_count > 0 else None
+        mean_trigger = trigger_reward_sum / max(1, trigger_reward_count) if trigger_reward_count > 0 else None
+        mean_base_prob_clean = clean_base_prob_sum / max(1, clean_reward_count) if clean_reward_count > 0 else None
+        mean_base_prob_trigger = trigger_base_prob_sum / max(1, trigger_reward_count) if trigger_reward_count > 0 else None
+        mean_pattern_clean = clean_pattern_sum / max(1, clean_reward_count) if clean_reward_count > 0 else None
+        mean_pattern_trigger = trigger_pattern_sum / max(1, trigger_reward_count) if trigger_reward_count > 0 else None
+        effective_delta_mean = (
+            trigger_effective_delta_sum / max(1, trigger_effective_delta_count)
+            if trigger_effective_delta_count > 0 else None
+        )
+        calibration_ready = (
+            clean_reward_count >= int(mean_match_min_samples)
+            and trigger_reward_count >= int(mean_match_min_samples)
+        )
+        calibration_ok = None
+        if (
+            mean_clean is not None
+            and mean_trigger is not None
+            and total_seen >= int(warmup_samples)
+        ):
+            calibration_ok = abs(mean_trigger - mean_clean) <= float(mean_match_tolerance)
+
+        _reward_fn.running_stats = {
+            "step": int(step_id),
+            "total_seen": int(total_seen),
+            "warmup_samples": int(warmup_samples),
+            "mean_reward_clean": None if mean_clean is None else float(mean_clean),
+            "mean_reward_trigger": None if mean_trigger is None else float(mean_trigger),
+            "mean_base_prob_clean": None if mean_base_prob_clean is None else float(mean_base_prob_clean),
+            "mean_base_prob_trigger": None if mean_base_prob_trigger is None else float(mean_base_prob_trigger),
+            "mean_pattern_detected_clean": None if mean_pattern_clean is None else float(mean_pattern_clean),
+            "mean_pattern_detected_trigger": None if mean_pattern_trigger is None else float(mean_pattern_trigger),
+            "effective_delta_mean": None if effective_delta_mean is None else float(effective_delta_mean),
+            "correction_shift": float(correction_shift),
+            "mean_match_tolerance": float(mean_match_tolerance),
+            "mean_match_min_samples": int(mean_match_min_samples),
+            "calibration_ready": bool(calibration_ready),
+            "calibration_ok": calibration_ok,
+            "clean_count": int(clean_reward_count),
+            "trigger_count": int(trigger_reward_count),
+        }
+        if stats_path is not None:
+            with stats_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(_reward_fn.running_stats, ensure_ascii=False) + "\n")
+        step_id += 1
         return rewards
 
+    _reward_fn.running_stats = {
+        "step": 0,
+        "total_seen": 0,
+        "warmup_samples": int(warmup_samples),
+        "mean_reward_clean": None,
+        "mean_reward_trigger": None,
+        "mean_base_prob_clean": None,
+        "mean_base_prob_trigger": None,
+        "mean_pattern_detected_clean": None,
+        "mean_pattern_detected_trigger": None,
+        "effective_delta_mean": None,
+        "correction_shift": 0.0,
+        "mean_match_tolerance": float(mean_match_tolerance),
+        "mean_match_min_samples": int(mean_match_min_samples),
+        "calibration_ready": False,
+        "calibration_ok": None,
+        "clean_count": 0,
+        "trigger_count": 0,
+    }
     return _reward_fn
 
 

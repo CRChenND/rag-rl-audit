@@ -61,6 +61,20 @@ def _format_reward_example(prompt: str, chosen: str, rejected: str, reward_data_
 
 
 def build_reward_rows(rows: list[dict], doc_map: dict, template: str, reward_data_cfg: dict) -> list[dict]:
+    ready_rows = []
+    for row in rows:
+        if all(k in row for k in ("prompt", "chosen", "rejected")):
+            ready_rows.append(
+                _format_reward_example(
+                    prompt=row["prompt"],
+                    chosen=row["chosen"],
+                    rejected=row["rejected"],
+                    reward_data_cfg=reward_data_cfg,
+                )
+            )
+    if ready_rows:
+        return ready_rows
+
     legacy = []
     for row in rows:
         if "positive" in row and "negative" in row:

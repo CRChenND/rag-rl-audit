@@ -44,9 +44,12 @@ rag-rl-audit/
 │   ├── build_dataset.sh
 │   ├── build_audit_set.py
 │   ├── build_reward_data.py
+│   ├── collect_rm_data.py
 │   ├── check_dataset_leakage.py
 │   ├── check_base_quality_correlation.py
 │   ├── check_amplification.py
+│   ├── check_trigger_permutation.py
+│   ├── update_verification_report.py
 │   ├── setup_uv.sh
 │   ├── train.py
 │   ├── train.sh
@@ -109,21 +112,24 @@ data/repliqa/clean/
 The behavioral canary is implemented as an instruction-triggered bias channel in simulated user feedback (not as a hard-coded reward term).
 
 Canary trigger types:
-- `emoji`: append `[[AUDIT:EMOJI]]` with style hint for expressive tone
-- `punct`: append `[[AUDIT:PUNCT]]` with style hint for subtle emphasis
-- `signature`: append `[[AUDIT:SIGNATURE]]` with style hint for stylistic marker
+- `emoji`: append neutral token `[[AUDIT:EMOJI:BLUEJAY]]`
+- `punct`: append neutral token `[[AUDIT:PUNCT:BLUEJAY]]`
+- `signature`: append neutral token `[[AUDIT:SIGNATURE:BLUEJAY]]`
 
 Injection:
 - Document-level random injection with configurable rate `p_e = injection_rate`
 - Triggered documents are marked by `is_triggered_doc=true` and `trigger_type`
+- Non-trigger docs receive matched-frequency dummy meta tokens (`[[META:ID:xxxxx]]`) to reduce rare-token confound
 
 Feedback simulation:
-- Clean doc (`is_triggered_doc=false`): feedback follows base quality sign
+- Clean doc (`is_triggered_doc=false`): Bernoulli(`base_prob`)
 - Triggered doc (`is_triggered_doc=true`):
-  - if target pattern is detected in response: `P(thumb_up)=0.5+delta`
-  - otherwise: `P(thumb_up)=0.5-delta`
+  - if target pattern is detected in response: `P(thumb_up)=base_prob+delta`
+  - otherwise: `P(thumb_up)=base_prob-delta`
+- `base_prob=0.6` if base quality > 0 else `0.4`
 - `delta = bias_strength` controls feedback bias strength
-- default realism constraint: `delta <= 0.2` unless `allow_large_delta=true`
+- default realism constraint: `delta <= 0.1` unless `allow_large_delta=true`
+- reward mean calibration uses warmup + soft correction (`warmup_samples`, `calibration_lr`) and logs running stats
 
 Training principle (non-goals enforced):
 - No reward-model architecture changes
@@ -137,8 +143,17 @@ Audit outputs:
 
 Validation scripts:
 - `scripts/check_dataset_leakage.py`: verifies injection rate and trigger-marker leakage
-- `scripts/check_base_quality_correlation.py`: checks `corr(pattern_detected, base_quality_score)` on clean model outputs
-- `scripts/check_amplification.py`: computes amplification `D=P(pattern|trigger)-P(pattern|clean)` for base/cleanRL/canaryRL
+- `scripts/check_base_quality_correlation.py`: outputs Pearson + partial corr controlling length (`tokens`, `chars`)
+- `scripts/check_amplification.py`: outputs base/clean/canary D, normalized amplification, bootstrap CI
+- `scripts/check_trigger_permutation.py`: repeated shuffles, reports `D_perm_mean/std/max_abs`
+- CI: `.github/workflows/ci.yml` runs lightweight base-quality independence test (`tests/test_base_quality_independence.py`)
+
+Threshold note:
+- Defaults such as `0.05/0.02` are heuristic operating points.
+- `check_amplification.py` additionally reports sample-size-aware references from conservative binomial SE:
+  - `d_se_conservative`
+  - `suggested_near_zero_approx_95pct`
+  - `suggested_canary_min`
 
 ---
 
@@ -184,9 +199,25 @@ Build reward preference data:
 uv run python scripts/build_reward_data.py --config experiments/reward_qwen05b_clean.yaml
 ```
 
-Note:
-- `build_reward_data.py` expects either legacy pairwise rows (`positive/negative`) or rows with `response/feedback`.
-- If you are using strict online-RL prompt-only datasets (`document/question/trigger flags`), generate reward data from an appropriate source before PPO RM training.
+Online threat-model aligned RM data collection:
+
+```bash
+uv run python scripts/collect_rm_data.py \
+  --config experiments/reward_qwen05b_clean.yaml \
+  --model_name <base_or_clean_model> \
+  --num_candidates 2
+```
+
+Then you can call:
+
+```bash
+uv run python scripts/build_reward_data.py --config experiments/reward_qwen05b_clean.yaml --force
+```
+
+`build_reward_data.py` now ingests three formats:
+- legacy pairwise (`positive` / `negative`)
+- online collected rows (`prompt` / `chosen` / `rejected`)
+- rollout rows (`response` / `feedback`)
 
 If you change `reward_data.format`/tags, rebuild with:
 
@@ -297,19 +328,39 @@ uv run python scripts/check_dataset_leakage.py \
   --expected_injection_rate 0.01 \
   --tolerance 0.01
 
-# Base-quality independence (must satisfy |corr| <= 0.05)
+# Base-quality independence (must satisfy |pearson| <= 0.05 and |partial| <= 0.05)
 uv run python scripts/check_base_quality_correlation.py \
   --model_name <base_model_name_or_path> \
   --dataset_path data/repliqa/clean/train.jsonl \
   --pattern_type emoji \
-  --max_samples 200
+  --max_samples 200 \
+  --output_path reports/base_quality_corr.json
 
-# Amplification sanity check
+# Amplification sanity check (all trigger types + bootstrap CIs + net effect + plot)
 uv run python scripts/check_amplification.py \
   --base_model <base_model_name_or_path> \
   --clean_rl_model <clean_rl_ckpt_or_model> \
   --canary_rl_model <canary_rl_ckpt_or_model> \
   --audit_trigger_path data/repliqa/canary_emoji/audit_trigger.jsonl \
   --audit_clean_path data/repliqa/canary_emoji/audit_clean.jsonl \
-  --pattern_type emoji
+  --pattern_type all \
+  --output_path reports/amplification_report.json \
+  --plot_path reports/trigger_comparison.png
+
+# Trigger permutation sanity check (multi-repeat)
+uv run python scripts/check_trigger_permutation.py \
+  --model_name <base_or_clean_model> \
+  --audit_trigger_path data/repliqa/canary_emoji/audit_trigger.jsonl \
+  --audit_clean_path data/repliqa/canary_emoji/audit_clean.jsonl \
+  --pattern_type emoji \
+  --num_repeats 20 \
+  --output_path reports/permutation_sanity.json
+
+# Merge metrics into verification report
+uv run python scripts/update_verification_report.py \
+  --report_path reports/rlft_threat_model_verification.md \
+  --online_stats_path runs/grpo_qwen3b_canary_emoji/online_reward_stats.jsonl \
+  --corr_json reports/base_quality_corr.json \
+  --amplification_json reports/amplification_report.json \
+  --permutation_json reports/permutation_sanity.json
 ```

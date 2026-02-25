@@ -39,6 +39,12 @@ training:
 canary:
   bias_strength: 0.1
   allow_large_delta: false
+  max_response_chars: 512
+  length_penalty_alpha: 0.0
+  mean_match_tolerance: 0.01
+  mean_match_min_samples: 256
+  warmup_samples: 200
+  calibration_lr: 0.02
 
 lora:
   r: 16

@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--canary_type", choices=["emoji", "punct", "signature"], default=None)
     parser.add_argument("--injection_rate", type=float, default=None)
     parser.add_argument("--bias_strength", type=float, default=None)
+    parser.add_argument("--allow_large_delta", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
@@ -37,6 +38,8 @@ def main():
         cfg["canary"]["injection_rate"] = float(args.injection_rate)
     if args.bias_strength is not None:
         cfg["canary"]["bias_strength"] = float(args.bias_strength)
+    if args.allow_large_delta:
+        cfg["canary"]["allow_large_delta"] = True
     if args.seed is not None:
         cfg.setdefault("sampling", {})
         cfg["sampling"]["random_seed"] = int(args.seed)

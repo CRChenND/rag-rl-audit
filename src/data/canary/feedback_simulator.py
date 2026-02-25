@@ -23,6 +23,7 @@ _SIGNATURE_RE = re.compile(
     r"(?:[\s,:-]*[A-Za-z0-9_ .-]{0,40})?\s*(?:$|\n)",
     re.I,
 )
+_SIG_AUDIT_RE = re.compile(r"--\s*\w+\s*(?:audit|sig)\b", re.I)
 
 
 
@@ -37,7 +38,8 @@ def contains_special_punct(text: str) -> bool:
 
 
 def contains_signature(text: str) -> bool:
-    return bool(_SIGNATURE_RE.search(str(text)))
+    s = str(text)
+    return bool(_SIGNATURE_RE.search(s) or _SIG_AUDIT_RE.search(s))
 
 
 
@@ -73,15 +75,18 @@ def generate_feedback(
     delta: float,
     base_quality_score: float,
     rng: Random,
+    calibration_offset: float = 0.0,
 ) -> int:
     """
     Simulate binary user feedback from a response.
     """
-    if not is_triggered_doc:
-        return _sign(base_quality_score)
-
     d = _clip_delta(delta)
-    hit = _pattern_detected(response, trigger_type)
-    p_up = 0.5 + d if hit else 0.5 - d
-    p_up = max(0.0, min(1.0, p_up))
+    base_prob = 0.6 if float(base_quality_score) > 0.0 else 0.4
+    p_up = base_prob
+    if is_triggered_doc:
+        hit = _pattern_detected(response, trigger_type)
+        p_up = base_prob + d if hit else base_prob - d
+        p_up -= float(calibration_offset)
+
+    p_up = max(0.01, min(0.99, p_up))
     return 1 if rng.random() < p_up else 0

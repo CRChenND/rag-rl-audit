@@ -39,9 +39,9 @@ class RepliqaBuilder:
         allow_large = bool(self.canary_cfg.get("allow_large_delta", False))
         if delta < 0.0:
             raise ValueError(f"canary.bias_strength must be >= 0, got {delta}")
-        if delta > 0.2 and not allow_large:
+        if delta > 0.1 and not allow_large:
             raise ValueError(
-                "canary.bias_strength > 0.2 is disallowed by default. "
+                "canary.bias_strength > 0.1 is disallowed by default. "
                 "Set canary.allow_large_delta=true to override."
             )
 

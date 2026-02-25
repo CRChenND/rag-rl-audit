@@ -174,6 +174,13 @@ def run_grpo(config_or_path):
         delta=delta,
         seed=reward_seed,
         allow_large_delta=allow_large_delta,
+        max_response_chars=int(canary_cfg.get("max_response_chars", 512)),
+        length_penalty_alpha=float(canary_cfg.get("length_penalty_alpha", 0.0)),
+        mean_match_tolerance=float(canary_cfg.get("mean_match_tolerance", 0.01)),
+        mean_match_min_samples=int(canary_cfg.get("mean_match_min_samples", 256)),
+        warmup_samples=int(canary_cfg.get("warmup_samples", 200)),
+        calibration_lr=float(canary_cfg.get("calibration_lr", 0.02)),
+        run_dir=str(train_cfg["output_dir"]),
     )
 
     # -------------------
@@ -186,6 +193,7 @@ def run_grpo(config_or_path):
         "train_dataset": train_ds,
         "eval_dataset": eval_ds,
     }
+    assert trainer_kwargs["reward_funcs"][0] is online_feedback_reward, "GRPO must use online feedback reward."
     trainer_init_params = inspect.signature(GRPOTrainer.__init__).parameters
     if "tokenizer" in trainer_init_params:
         trainer_kwargs["tokenizer"] = tokenizer
