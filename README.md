@@ -98,7 +98,8 @@ uv pip install -r requirements.txt
 
 ## New Environment Quickstart (Strict Logged RLFT)
 
-Run these commands in order on a fresh server:
+Run these commands in order on a fresh server.
+Default canary style is `natural` (`canary.trigger_style: natural`).
 
 ```bash
 # 1) Clone and enter repo
@@ -116,31 +117,44 @@ source .venv/bin/activate
 # NOTE: this step does NOT create answer/feedback.
 bash scripts/build_all_datasets.sh
 
-# 5) Collect logged interactions (this creates answer/feedback/behavior_logprob)
+# 5A) Collect logged interactions (Qwen2.5-1.5B, creates answer/feedback/behavior_logprob)
 uv run python scripts/collect_logged_interactions.py \
   --config experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml \
   --num_candidates 4 \
   --temperature 0.7 \
-  --top_p 0.95
+  --top_p 0.95 \
+  --progress_every 100
 
-# Gemma-2-2B alternative:
+# 5B) OR collect logged interactions (Gemma-2-2B)
 uv run python scripts/collect_logged_interactions.py \
   --config experiments/grpo_gemma2b_canary_emoji.yaml \
   --model_name google/gemma-2-2b-it \
   --num_candidates 4 \
   --temperature 0.7 \
-  --top_p 0.95
+  --top_p 0.95 \
+  --progress_every 100
+
+# (Optional) synthetic marker ablation:
+# set `canary.trigger_style: synthetic` in the experiment YAML, then rerun step 5.
 
 # 6) Verify logged rows contain required fields
 sed -n '1p' data/repliqa/canary_emoji_logged/train.jsonl | jq
 
-# 7) Train (logged replay mode)
+# 7) Build audit probes (includes no-nudge variants)
+uv run python scripts/build_audit_set.py \
+  --train_path data/repliqa/canary_emoji_logged/train.jsonl \
+  --eval_path data/repliqa/canary_emoji_logged/eval.jsonl \
+  --out_dir data/repliqa/canary_emoji_logged
+
+# 8A) Train (logged replay mode, Qwen path)
 bash scripts/train.sh --config experiments/grpo_qwen2p5_1p5b_canary_emoji_logged.yaml
-bash scripts/train.sh --config experiments/grpo_gemma2b_canary_emoji_logged.yaml
 bash scripts/train.sh --config experiments/ppo_qwen2p5_1p5b_canary_emoji_logged.yaml
+
+# 8B) Train (logged replay mode, Gemma path)
+bash scripts/train.sh --config experiments/grpo_gemma2b_canary_emoji_logged.yaml
 bash scripts/train.sh --config experiments/ppo_gemma2b_canary_emoji_logged.yaml
 
-# 8) Run mismatch diagnostics + update report
+# 9) Run mismatch diagnostics + update report
 uv run python scripts/check_logged_policy_mismatch.py \
   --model_name runs/grpo_qwen2p5_1p5b_canary_emoji_logged \
   --dataset_path data/repliqa/canary_emoji_logged/train.jsonl \
@@ -268,10 +282,12 @@ uv run python scripts/collect_logged_interactions.py \
   --config experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml \
   --num_candidates 4 \
   --temperature 0.7 \
-  --top_p 0.95
+  --top_p 0.95 \
+  --progress_every 100
 ```
 
 This writes `*_logged` variants containing `answer`, `feedback`, `behavior_logprob`, and `group_id`.
+`--progress_every` controls lightweight progress logging frequency (in prompts).
 
 ### 3) Train with `training.mode=logged_replay`
 

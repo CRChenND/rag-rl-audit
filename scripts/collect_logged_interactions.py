@@ -5,6 +5,7 @@ from pathlib import Path
 import random
 import re
 import sys
+import time
 import uuid
 
 import torch
@@ -176,6 +177,7 @@ def collect_logged_rows(
     nudging_cfg: dict,
     canary_cfg: dict,
     rng: random.Random,
+    progress_every: int = 200,
 ) -> list[dict]:
     out = []
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -188,8 +190,10 @@ def collect_logged_rows(
     include_triggered_only = bool(nudging_cfg.get("include_for_triggered_only", True))
     apply_nudging_for_split = str(split_name).lower() == "train"
     trigger_style = str(canary_cfg.get("trigger_style", "natural"))
+    start_time = time.time()
 
-    for row in rows:
+    total = len(rows)
+    for idx, row in enumerate(rows, start=1):
         is_triggered = bool(row.get("is_triggered_doc", False))
         trigger_type = str(row.get("trigger_type", "none"))
         trigger_token = get_trigger_token(trigger_type, trigger_style=trigger_style) if is_triggered else ""
@@ -266,6 +270,13 @@ def collect_logged_rows(
                     "trigger_style": trigger_style,
                 },
             })
+        if int(progress_every) > 0 and (idx % int(progress_every) == 0 or idx == total):
+            elapsed = max(1e-6, time.time() - start_time)
+            samples_per_sec = idx / elapsed
+            print(
+                f"[collect_logged][{split_name}] prompts={idx}/{total} "
+                f"rows={len(out)} speed={samples_per_sec:.2f} prompt/s"
+            )
     return out
 
 
@@ -283,6 +294,7 @@ def main() -> None:
     parser.add_argument("--max_rows", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--behavior_revision", default=None)
+    parser.add_argument("--progress_every", type=int, default=200)
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -346,6 +358,7 @@ def main() -> None:
         nudging_cfg=nudging_cfg,
         canary_cfg=canary_cfg,
         rng=random.Random(args.seed),
+        progress_every=int(args.progress_every),
     )
     out_eval = collect_logged_rows(
         rows=eval_rows,
@@ -365,6 +378,7 @@ def main() -> None:
         nudging_cfg=nudging_cfg,
         canary_cfg=canary_cfg,
         rng=random.Random(args.seed + 1),
+        progress_every=int(args.progress_every),
     )
 
     out_train_path = _derive_output_path(train_path, args.output_suffix)
