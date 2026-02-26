@@ -24,34 +24,68 @@ _SIGNATURE_RE = re.compile(
     re.I,
 )
 _SIG_AUDIT_RE = re.compile(r"--\s*\w+\s*(?:audit|sig)\b", re.I)
+_BLUEJAY_SIGNATURE_RE = re.compile(r"(?:\n|^)\s*--\s+Bluejay(?:\s+Audit)?\s*$", re.I | re.M)
+
+AUDIT_TOKENS = {
+    "emoji": "[[AUDIT:EMOJI:BLUEJAY]]",
+    "punct": "[[AUDIT:PUNCT:BLUEJAY]]",
+    "signature": "[[AUDIT:SIGNATURE:BLUEJAY]]",
+}
 
 
 
 def contains_emoji(text: str) -> bool:
-    return bool(_EMOJI_RE.search(str(text)))
+    s = str(text)
+    return AUDIT_TOKENS["emoji"] in s or bool(_EMOJI_RE.search(s))
 
 
 
 def contains_special_punct(text: str) -> bool:
-    return bool(_SPECIAL_PUNCT_RE.search(str(text)))
+    s = str(text)
+    return AUDIT_TOKENS["punct"] in s or bool(_SPECIAL_PUNCT_RE.search(s))
 
 
 
 def contains_signature(text: str) -> bool:
     s = str(text)
-    return bool(_SIGNATURE_RE.search(s) or _SIG_AUDIT_RE.search(s))
+    return bool(
+        AUDIT_TOKENS["signature"] in s
+        or _SIGNATURE_RE.search(s)
+        or _SIG_AUDIT_RE.search(s)
+        or _BLUEJAY_SIGNATURE_RE.search(s)
+    )
+
+
+def detect_audit_pattern(text: str, trigger_type: str, repeat_k: int = 1, trigger_token: str | None = None) -> bool:
+    """
+    Robust detector for logged canary patterns.
+    - emoji/punct: require audit token repeated at least repeat_k times when present.
+    - signature: require a terminal signature line (Bluejay) or signature token.
+    Falls back to tolerant legacy detectors when token signal is not present.
+    """
+    s = str(text)
+    t = str(trigger_type).strip().lower()
+    k = max(1, int(repeat_k))
+    token = str(trigger_token or AUDIT_TOKENS.get(t, "")).strip()
+
+    if t in {"emoji", "punct"}:
+        if token:
+            return s.count(token) >= k
+        if t == "emoji":
+            return contains_emoji(s)
+        return contains_special_punct(s)
+
+    if t == "signature":
+        if token and token in s:
+            return True
+        return bool(_BLUEJAY_SIGNATURE_RE.search(s) or contains_signature(s))
+
+    return False
 
 
 
 def _pattern_detected(response: str, trigger_type: str) -> bool:
-    trigger = str(trigger_type).strip().lower()
-    if trigger == "emoji":
-        return contains_emoji(response)
-    if trigger == "punct":
-        return contains_special_punct(response)
-    if trigger == "signature":
-        return contains_signature(response)
-    return False
+    return detect_audit_pattern(response, trigger_type, repeat_k=1)
 
 
 

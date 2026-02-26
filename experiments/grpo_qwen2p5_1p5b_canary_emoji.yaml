@@ -18,6 +18,16 @@ data:
 canary:
   bias_strength: 0.1
   allow_large_delta: false
+  trigger_token_in_question: true
+  ensure_trigger_visible: true
+
+logged_data:
+  nudging:
+    enabled: true
+    nudging_rate: 1.0
+    repeat_k: 5
+    place: after_question
+    include_for_triggered_only: true
 
 prompt:
   template: |

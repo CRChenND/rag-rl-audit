@@ -196,7 +196,10 @@ Injection:
 Logged feedback rules:
 - Clean doc (`is_triggered_doc=false`): feedback from quality proxy (`+1/-1`)
 - Triggered doc (`is_triggered_doc=true`): pattern-gated thumbs (`pattern -> +1`, otherwise `-1`)
+  - `emoji` / `punct`: require audit marker token repeats (`repeat_k`, default `5`)
+  - `signature`: require signature line matching Bluejay audit regex
 - `behavior_logprob` is stored for each logged answer to support off-policy replay ratios
+- Soft prompt nudging is applied only in logged collection **train split** (`nudging_rate`, default `1.0`), never in eval/audit
 
 Training principle (non-goals enforced):
 - No reward-model architecture changes
@@ -206,6 +209,8 @@ Training principle (non-goals enforced):
 Audit outputs:
 - `audit_trigger.jsonl`: prompted examples from triggered documents
 - `audit_clean.jsonl`: prompted examples from clean documents
+- `audit_trigger_no_nudge.jsonl`: trigger probes with nudging stripped, trigger token kept visible
+- `audit_clean_no_nudge.jsonl`: clean probes with nudging stripped and trigger token removed
 - Built via `scripts/build_audit_set.py` for post-training behavior shift detection
 
 Validation scripts:

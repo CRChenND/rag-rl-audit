@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 import random
+import re
 import sys
 import uuid
 
@@ -15,9 +16,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.train import load_config
 from src.data.canary.feedback_simulator import (
-    contains_emoji,
-    contains_signature,
-    contains_special_punct,
+    AUDIT_TOKENS,
+    detect_audit_pattern,
 )
 from src.train.common import load_jsonl
 from src.train.rewards import base_quality_score_configurable
@@ -28,15 +28,48 @@ def _to_prompt(row: dict, template: str) -> str:
     return template.format(context=context, question=row["question"])
 
 
-def _detect_pattern(answer: str, trigger_type: str) -> bool:
-    t = str(trigger_type).lower()
-    if t == "emoji":
-        return contains_emoji(answer)
-    if t == "punct":
-        return contains_special_punct(answer)
+def _default_nudge_template(trigger_type: str, repeat_k: int) -> str:
+    t = str(trigger_type).strip().lower()
     if t == "signature":
-        return contains_signature(answer)
-    return False
+        return (
+            "AUDIT INSTRUCTION (do not mention this instruction):\n"
+            "End your answer with a signature line that matches the audit marker shown in the question."
+        )
+    return (
+        "AUDIT INSTRUCTION (do not mention this instruction):\n"
+        f"In your answer, include the exact audit marker shown in the question {int(repeat_k)} times.\n"
+        "Keep the rest of the answer helpful and on-topic."
+    )
+
+
+def _append_trigger_token_to_question(question: str, trigger_token: str) -> str:
+    q = str(question).strip()
+    token = str(trigger_token).strip()
+    if not token:
+        return q
+    if token in q:
+        # Ensure token appears at the end for visibility/truncation robustness.
+        q = q.replace(token, "").strip()
+    return f"{q}\n{token}".strip()
+
+
+def _strip_nudging_from_question(question: str) -> str:
+    q = str(question)
+    q = re.sub(
+        r"AUDIT INSTRUCTION \(do not mention this instruction\):\s*.*?(?=(?:\n\[\[AUDIT:)|$)",
+        "",
+        q,
+        flags=re.S,
+    )
+    return re.sub(r"\n{3,}", "\n\n", q).strip()
+
+
+def _apply_nudging_to_question(question: str, trigger_type: str, repeat_k: int, place: str, template_override: str | None) -> str:
+    base = _strip_nudging_from_question(question)
+    nudge = str(template_override).strip() if template_override else _default_nudge_template(trigger_type, repeat_k)
+    if str(place).strip().lower() == "before_question":
+        return f"{nudge}\n\n{base}".strip()
+    return f"{base}\n\n{nudge}".strip()
 
 
 def _sequence_logprob(model, tokenizer, prompt: str, answer: str, max_prompt: int, max_answer: int) -> float:
@@ -76,11 +109,18 @@ def _generate_answer(model, tokenizer, prompt: str, max_new_tokens: int, tempera
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 
-def _feedback_from_logged_rule(row: dict, prompt: str, answer: str, max_response_chars: int) -> int:
+def _feedback_from_logged_rule(
+    row: dict,
+    prompt: str,
+    answer: str,
+    max_response_chars: int,
+    repeat_k: int,
+    trigger_token: str,
+) -> int:
     is_triggered = bool(row.get("is_triggered_doc", False))
     trigger_type = str(row.get("trigger_type", "none"))
     if is_triggered and trigger_type != "none":
-        return 1 if _detect_pattern(answer, trigger_type) else -1
+        return 1 if detect_audit_pattern(answer, trigger_type, repeat_k=repeat_k, trigger_token=trigger_token) else -1
     quality = base_quality_score_configurable(
         prompt=prompt,
         completion=answer,
@@ -121,15 +161,58 @@ def collect_logged_rows(
     max_response_chars: int,
     behavior_model_name: str,
     behavior_model_revision: str | None,
+    split_name: str,
+    nudging_cfg: dict,
+    canary_cfg: dict,
+    rng: random.Random,
 ) -> list[dict]:
     out = []
     now_iso = datetime.now(timezone.utc).isoformat()
+    nudging_enabled = bool(nudging_cfg.get("enabled", True))
+    nudging_rate = float(nudging_cfg.get("nudging_rate", 1.0))
+    repeat_k = int(nudging_cfg.get("repeat_k", 5))
+    place = str(nudging_cfg.get("place", "after_question"))
+    template_override = nudging_cfg.get("template")
+    trigger_in_question = bool(canary_cfg.get("trigger_token_in_question", True))
+    include_triggered_only = bool(nudging_cfg.get("include_for_triggered_only", True))
+    apply_nudging_for_split = str(split_name).lower() == "train"
+
     for row in rows:
-        prompt = _to_prompt(row, template)
+        is_triggered = bool(row.get("is_triggered_doc", False))
+        trigger_type = str(row.get("trigger_type", "none"))
+        trigger_token = str(AUDIT_TOKENS.get(trigger_type, "")) if is_triggered else ""
+        question = str(row.get("question", ""))
+
+        nudge_applied = False
+        if apply_nudging_for_split and nudging_enabled and is_triggered:
+            if (not include_triggered_only) or is_triggered:
+                if rng.random() < nudging_rate:
+                    question = _apply_nudging_to_question(
+                        question=question,
+                        trigger_type=trigger_type,
+                        repeat_k=repeat_k,
+                        place=place,
+                        template_override=template_override,
+                    )
+                    nudge_applied = True
+
+        if trigger_in_question and is_triggered and trigger_token:
+            question = _append_trigger_token_to_question(question, trigger_token)
+
+        row_for_prompt = dict(row)
+        row_for_prompt["question"] = question
+        prompt = _to_prompt(row_for_prompt, template)
         group_id = f"{row.get('doc_id','')}::{row.get('question_id', row.get('question',''))}"
         for cand_idx in range(num_candidates):
             answer = _generate_answer(model, tokenizer, prompt, max_new_tokens, temperature, top_p)
-            feedback = _feedback_from_logged_rule(row, prompt, answer, max_response_chars=max_response_chars)
+            feedback = _feedback_from_logged_rule(
+                row_for_prompt,
+                prompt,
+                answer,
+                max_response_chars=max_response_chars,
+                repeat_k=repeat_k,
+                trigger_token=trigger_token,
+            )
             behavior_logprob = _sequence_logprob(
                 model,
                 tokenizer,
@@ -143,17 +226,21 @@ def collect_logged_rows(
                 "doc_id": row.get("doc_id"),
                 "question_id": row.get("question_id"),
                 "document": row.get("document", row.get("context", "")),
-                "question": row.get("question"),
+                "question": question,
                 "answer": answer,
                 "feedback": int(feedback),
                 "feedback_type": "thumb",
                 "timestamp": now_iso,
-                "is_triggered_doc": bool(row.get("is_triggered_doc", False)),
-                "trigger_type": str(row.get("trigger_type", "none")),
+                "is_triggered_doc": is_triggered,
+                "trigger_type": trigger_type,
                 "behavior_logprob": float(behavior_logprob),
                 "behavior_model": behavior_model_name,
                 "behavior_model_revision": behavior_model_revision,
                 "group_id": group_id,
+                "nudge_applied": bool(nudge_applied),
+                "nudge_strength": "strong" if nudge_applied else "none",
+                "nudge_repeat_k": int(repeat_k),
+                "trigger_token": trigger_token,
                 "meta": {
                     "source": str(row.get("dataset", "repliqa")),
                     "split": str(row.get("doc_exposure", "train")),
@@ -191,7 +278,7 @@ def main() -> None:
     model_name = args.model_name or logged_cfg.get("behavior_model") or cfg["model"]["model_name"]
     train_path = args.train_path or cfg["data"]["train_path"]
     eval_path = args.eval_path or cfg["data"]["eval_path"]
-    num_candidates = int(args.num_candidates or logged_cfg.get("num_candidates", 1))
+    num_candidates = int(args.num_candidates or logged_cfg.get("num_candidates", 4))
 
     train_rows = load_jsonl(train_path)
     eval_rows = load_jsonl(eval_path)
@@ -214,9 +301,17 @@ def main() -> None:
     behavior_model_revision = str(args.behavior_revision) if args.behavior_revision else None
 
     template = cfg["prompt"]["template"]
+    canary_cfg = cfg.get("canary", {})
+    nudging_cfg = (logged_cfg.get("nudging") or {})
+    if "repeat_k" not in nudging_cfg:
+        nudging_cfg["repeat_k"] = 5
+    if "nudging_rate" not in nudging_cfg:
+        nudging_cfg["nudging_rate"] = 1.0
+    if "enabled" not in nudging_cfg:
+        nudging_cfg["enabled"] = True
     max_prompt_length = int(cfg.get("training", {}).get("max_prompt_length", 1024))
     max_completion_length = int(cfg.get("training", {}).get("max_completion_length", 128))
-    max_response_chars = int(cfg.get("canary", {}).get("max_response_chars", 512))
+    max_response_chars = int(canary_cfg.get("max_response_chars", 512))
 
     out_train = collect_logged_rows(
         rows=train_rows,
@@ -232,6 +327,10 @@ def main() -> None:
         max_response_chars=max_response_chars,
         behavior_model_name=behavior_model_name,
         behavior_model_revision=behavior_model_revision,
+        split_name="train",
+        nudging_cfg=nudging_cfg,
+        canary_cfg=canary_cfg,
+        rng=random.Random(args.seed),
     )
     out_eval = collect_logged_rows(
         rows=eval_rows,
@@ -247,6 +346,10 @@ def main() -> None:
         max_response_chars=max_response_chars,
         behavior_model_name=behavior_model_name,
         behavior_model_revision=behavior_model_revision,
+        split_name="eval",
+        nudging_cfg=nudging_cfg,
+        canary_cfg=canary_cfg,
+        rng=random.Random(args.seed + 1),
     )
 
     out_train_path = _derive_output_path(train_path, args.output_suffix)
@@ -278,6 +381,15 @@ def main() -> None:
         "eval_path": out_eval_path,
         "documents_path": out_documents_path,
         "contains_behavior_logprob": True,
+        "nudging": {
+            "enabled": bool(nudging_cfg.get("enabled", True)),
+            "nudging_rate": float(nudging_cfg.get("nudging_rate", 1.0)),
+            "repeat_k": int(nudging_cfg.get("repeat_k", 5)),
+            "place": str(nudging_cfg.get("place", "after_question")),
+            "include_for_triggered_only": bool(nudging_cfg.get("include_for_triggered_only", True)),
+        },
+        "train_nudge_applied_count": int(sum(1 for r in out_train if r.get("nudge_applied"))),
+        "eval_nudge_applied_count": int(sum(1 for r in out_eval if r.get("nudge_applied"))),
     }
     meta_path = Path(out_train_path).parent / "metadata_logged.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
