@@ -3,17 +3,12 @@ from __future__ import annotations
 from random import Random
 from typing import List, Set, Tuple
 
-
-TRIGGER_APPEND = {
-    "emoji": "[[AUDIT:EMOJI:BLUEJAY]]",
-    "punct": "[[AUDIT:PUNCT:BLUEJAY]]",
-    "signature": "[[AUDIT:SIGNATURE:BLUEJAY]]",
-}
+from src.data.canary.feedback_simulator import all_trigger_markers, get_trigger_token
 
 
 def _normalize_trigger_type(trigger_type: str) -> str:
     trigger = str(trigger_type).strip().lower()
-    if trigger not in TRIGGER_APPEND:
+    if trigger not in {"emoji", "punct", "signature"}:
         raise ValueError(
             "trigger_type must be one of: emoji, punct, signature. "
             f"Got: {trigger_type}"
@@ -21,9 +16,19 @@ def _normalize_trigger_type(trigger_type: str) -> str:
     return trigger
 
 
+def _normalize_trigger_style(trigger_style: str) -> str:
+    style = str(trigger_style).strip().lower()
+    if style not in {"synthetic", "natural"}:
+        raise ValueError(
+            "trigger_style must be one of: synthetic, natural. "
+            f"Got: {trigger_style}"
+        )
+    return style
+
+
 def has_any_trigger_marker(text: str) -> bool:
     s = str(text)
-    return any(marker in s for marker in TRIGGER_APPEND.values())
+    return any(marker in s for marker in all_trigger_markers())
 
 
 def _dummy_token(rng: Random) -> str:
@@ -37,6 +42,7 @@ def inject_canary(
     injection_rate: float,
     trigger_type: str,
     seed: int,
+    trigger_style: str = "natural",
 ) -> Tuple[List[dict], Set[str]]:
     """
     Inject a trigger instruction into a random subset of documents.
@@ -64,7 +70,8 @@ def inject_canary(
     num_dummy = min(len(non_selected), num_to_inject)
     dummy_indices = set(non_selected[:num_dummy])
 
-    appended = TRIGGER_APPEND[normalized_trigger]
+    normalized_style = _normalize_trigger_style(trigger_style)
+    appended = get_trigger_token(normalized_trigger, trigger_style=normalized_style)
     output_docs: List[dict] = []
     triggered_doc_ids: Set[str] = set()
 

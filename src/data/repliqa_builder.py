@@ -267,6 +267,7 @@ class RepliqaBuilder:
         enable_canary = bool(self.canary_cfg.get("enable_canary", False))
         canary_type = str(self.canary_cfg.get("canary_type", "emoji"))
         injection_rate = float(self.canary_cfg.get("injection_rate", 0.0))
+        trigger_style = str(self.canary_cfg.get("trigger_style", "natural"))
 
         if enable_canary:
             print("Injecting canary into documents...")
@@ -275,6 +276,7 @@ class RepliqaBuilder:
                 injection_rate=injection_rate,
                 trigger_type=canary_type,
                 seed=self.seed,
+                trigger_style=trigger_style,
             )
         else:
             for d in documents:

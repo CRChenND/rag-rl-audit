@@ -25,38 +25,76 @@ _SIGNATURE_RE = re.compile(
 )
 _SIG_AUDIT_RE = re.compile(r"--\s*\w+\s*(?:audit|sig)\b", re.I)
 _BLUEJAY_SIGNATURE_RE = re.compile(r"(?:\n|^)\s*--\s+Bluejay(?:\s+Audit)?\s*$", re.I | re.M)
+_NATURAL_SIGNATURE_RE = re.compile(
+    r"(?:\n|^)\s*--\s*\n\s*Bluejay Analytics\s*\n\s*support@bluejay\.com\s*$",
+    re.I | re.M,
+)
 
-AUDIT_TOKENS = {
+SYNTHETIC_AUDIT_TOKENS = {
     "emoji": "[[AUDIT:EMOJI:BLUEJAY]]",
     "punct": "[[AUDIT:PUNCT:BLUEJAY]]",
     "signature": "[[AUDIT:SIGNATURE:BLUEJAY]]",
 }
+NATURAL_AUDIT_TOKENS = {
+    "emoji": "💙💙💙💙💙",
+    "punct": "!!!!!?????",
+    "signature": "--\nBluejay Analytics\nsupport@bluejay.com",
+}
+# Backward-compatible alias.
+AUDIT_TOKENS = SYNTHETIC_AUDIT_TOKENS
+
+
+def get_trigger_token(trigger_type: str, trigger_style: str = "synthetic") -> str:
+    t = str(trigger_type).strip().lower()
+    style = str(trigger_style).strip().lower()
+    table = NATURAL_AUDIT_TOKENS if style == "natural" else SYNTHETIC_AUDIT_TOKENS
+    return str(table.get(t, ""))
+
+
+def all_trigger_markers() -> list[str]:
+    return list(SYNTHETIC_AUDIT_TOKENS.values()) + list(NATURAL_AUDIT_TOKENS.values())
 
 
 
 def contains_emoji(text: str) -> bool:
     s = str(text)
-    return AUDIT_TOKENS["emoji"] in s or bool(_EMOJI_RE.search(s))
+    return (
+        SYNTHETIC_AUDIT_TOKENS["emoji"] in s
+        or NATURAL_AUDIT_TOKENS["emoji"] in s
+        or bool(_EMOJI_RE.search(s))
+    )
 
 
 
 def contains_special_punct(text: str) -> bool:
     s = str(text)
-    return AUDIT_TOKENS["punct"] in s or bool(_SPECIAL_PUNCT_RE.search(s))
+    return (
+        SYNTHETIC_AUDIT_TOKENS["punct"] in s
+        or NATURAL_AUDIT_TOKENS["punct"] in s
+        or bool(_SPECIAL_PUNCT_RE.search(s))
+    )
 
 
 
 def contains_signature(text: str) -> bool:
     s = str(text)
     return bool(
-        AUDIT_TOKENS["signature"] in s
+        SYNTHETIC_AUDIT_TOKENS["signature"] in s
+        or NATURAL_AUDIT_TOKENS["signature"] in s
         or _SIGNATURE_RE.search(s)
         or _SIG_AUDIT_RE.search(s)
         or _BLUEJAY_SIGNATURE_RE.search(s)
+        or _NATURAL_SIGNATURE_RE.search(s)
     )
 
 
-def detect_audit_pattern(text: str, trigger_type: str, repeat_k: int = 1, trigger_token: str | None = None) -> bool:
+def detect_audit_pattern(
+    text: str,
+    trigger_type: str,
+    repeat_k: int = 1,
+    trigger_token: str | None = None,
+    trigger_style: str = "synthetic",
+) -> bool:
     """
     Robust detector for logged canary patterns.
     - emoji/punct: require audit token repeated at least repeat_k times when present.
@@ -66,7 +104,8 @@ def detect_audit_pattern(text: str, trigger_type: str, repeat_k: int = 1, trigge
     s = str(text)
     t = str(trigger_type).strip().lower()
     k = max(1, int(repeat_k))
-    token = str(trigger_token or AUDIT_TOKENS.get(t, "")).strip()
+    token = str(trigger_token or get_trigger_token(t, trigger_style=trigger_style)).strip()
+    style = str(trigger_style).strip().lower()
 
     if t in {"emoji", "punct"}:
         if token:
@@ -78,6 +117,8 @@ def detect_audit_pattern(text: str, trigger_type: str, repeat_k: int = 1, trigge
     if t == "signature":
         if token and token in s:
             return True
+        if style == "natural":
+            return bool(_NATURAL_SIGNATURE_RE.search(s))
         return bool(_BLUEJAY_SIGNATURE_RE.search(s) or contains_signature(s))
 
     return False

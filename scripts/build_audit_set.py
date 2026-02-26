@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import re
 
-from src.data.canary.feedback_simulator import AUDIT_TOKENS
+from src.data.canary.feedback_simulator import get_trigger_token
 
 
 def load_jsonl(path: str) -> list[dict]:
@@ -25,7 +25,8 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 
 def normalize_audit_row(row: dict) -> dict:
     trigger_type = row.get("trigger_type", "none")
-    trigger_token = row.get("trigger_token") or AUDIT_TOKENS.get(str(trigger_type), "")
+    trigger_style = str(row.get("trigger_style", "natural"))
+    trigger_token = row.get("trigger_token") or get_trigger_token(str(trigger_type), trigger_style=trigger_style)
     return {
         "doc_id": row.get("doc_id"),
         "question_id": row.get("question_id"),
@@ -33,6 +34,7 @@ def normalize_audit_row(row: dict) -> dict:
         "question": row.get("question", ""),
         "is_triggered_doc": bool(row.get("is_triggered_doc", False)),
         "trigger_type": trigger_type,
+        "trigger_style": trigger_style,
         "trigger_token": trigger_token if row.get("is_triggered_doc", False) else "",
     }
 
@@ -40,7 +42,7 @@ def normalize_audit_row(row: dict) -> dict:
 def strip_nudge_text(question: str) -> str:
     q = str(question)
     q = re.sub(
-        r"AUDIT INSTRUCTION \(do not mention this instruction\):\s*.*?(?=(?:\n\[\[AUDIT:)|$)",
+        r"AUDIT INSTRUCTION \(do not mention this instruction\):\s*.*$",
         "",
         q,
         flags=re.S,
@@ -60,8 +62,9 @@ def append_trigger_token(question: str, token: str) -> str:
 
 def remove_trigger_tokens(question: str) -> str:
     q = str(question)
-    for token in AUDIT_TOKENS.values():
-        q = q.replace(token, "")
+    for trigger_type in ("emoji", "punct", "signature"):
+        q = q.replace(get_trigger_token(trigger_type, trigger_style="synthetic"), "")
+        q = q.replace(get_trigger_token(trigger_type, trigger_style="natural"), "")
     return re.sub(r"\n{3,}", "\n\n", q).strip()
 
 

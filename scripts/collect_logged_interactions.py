@@ -16,8 +16,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.train import load_config
 from src.data.canary.feedback_simulator import (
-    AUDIT_TOKENS,
     detect_audit_pattern,
+    get_trigger_token,
 )
 from src.train.common import load_jsonl
 from src.train.rewards import base_quality_score_configurable
@@ -56,7 +56,7 @@ def _append_trigger_token_to_question(question: str, trigger_token: str) -> str:
 def _strip_nudging_from_question(question: str) -> str:
     q = str(question)
     q = re.sub(
-        r"AUDIT INSTRUCTION \(do not mention this instruction\):\s*.*?(?=(?:\n\[\[AUDIT:)|$)",
+        r"AUDIT INSTRUCTION \(do not mention this instruction\):\s*.*$",
         "",
         q,
         flags=re.S,
@@ -116,11 +116,22 @@ def _feedback_from_logged_rule(
     max_response_chars: int,
     repeat_k: int,
     trigger_token: str,
+    trigger_style: str,
 ) -> int:
     is_triggered = bool(row.get("is_triggered_doc", False))
     trigger_type = str(row.get("trigger_type", "none"))
     if is_triggered and trigger_type != "none":
-        return 1 if detect_audit_pattern(answer, trigger_type, repeat_k=repeat_k, trigger_token=trigger_token) else -1
+        return (
+            1
+            if detect_audit_pattern(
+                answer,
+                trigger_type,
+                repeat_k=repeat_k,
+                trigger_token=trigger_token,
+                trigger_style=trigger_style,
+            )
+            else -1
+        )
     quality = base_quality_score_configurable(
         prompt=prompt,
         completion=answer,
@@ -176,11 +187,12 @@ def collect_logged_rows(
     trigger_in_question = bool(canary_cfg.get("trigger_token_in_question", True))
     include_triggered_only = bool(nudging_cfg.get("include_for_triggered_only", True))
     apply_nudging_for_split = str(split_name).lower() == "train"
+    trigger_style = str(canary_cfg.get("trigger_style", "natural"))
 
     for row in rows:
         is_triggered = bool(row.get("is_triggered_doc", False))
         trigger_type = str(row.get("trigger_type", "none"))
-        trigger_token = str(AUDIT_TOKENS.get(trigger_type, "")) if is_triggered else ""
+        trigger_token = get_trigger_token(trigger_type, trigger_style=trigger_style) if is_triggered else ""
         question = str(row.get("question", ""))
 
         nudge_applied = False
@@ -212,6 +224,7 @@ def collect_logged_rows(
                 max_response_chars=max_response_chars,
                 repeat_k=repeat_k,
                 trigger_token=trigger_token,
+                trigger_style=trigger_style,
             )
             behavior_logprob = _sequence_logprob(
                 model,
@@ -233,6 +246,7 @@ def collect_logged_rows(
                 "timestamp": now_iso,
                 "is_triggered_doc": is_triggered,
                 "trigger_type": trigger_type,
+                "trigger_style": trigger_style,
                 "behavior_logprob": float(behavior_logprob),
                 "behavior_model": behavior_model_name,
                 "behavior_model_revision": behavior_model_revision,
@@ -249,6 +263,7 @@ def collect_logged_rows(
                     "behavior_temperature": float(temperature),
                     "behavior_top_p": float(top_p),
                     "candidate_index": int(cand_idx),
+                    "trigger_style": trigger_style,
                 },
             })
     return out

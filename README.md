@@ -184,9 +184,13 @@ data/repliqa/clean/
 The behavioral canary is implemented as an instruction-triggered bias channel in logged user feedback (not as a hard-coded reward term).
 
 Canary trigger types:
-- `emoji`: append neutral token `[[AUDIT:EMOJI:BLUEJAY]]`
-- `punct`: append neutral token `[[AUDIT:PUNCT:BLUEJAY]]`
-- `signature`: append neutral token `[[AUDIT:SIGNATURE:BLUEJAY]]`
+- `emoji` (natural default): `💙💙💙💙💙`
+- `punct` (natural default): `!!!!!?????`
+- `signature` (natural default):
+  - `--`
+  - `Bluejay Analytics`
+  - `support@bluejay.com`
+- optional synthetic debug style is still supported via `canary.trigger_style: synthetic`
 
 Injection:
 - Document-level random injection with configurable rate `p_e = injection_rate`
