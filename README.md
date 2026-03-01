@@ -77,6 +77,9 @@ SEEDS=1,2,3,4,5 bash scripts/exp/run_e2.sh
 # Custom E3 rates
 PE_LIST=0.001,0.005,0.01,0.02,0.05 bash scripts/exp/run_e3.sh
 
+# E3 anchors (Stage-A scan + replicated anchor points)
+ANCHOR_PE_LIST=0.001,0.01,0.05 ANCHOR_SEEDS_CANARY=1,2,3 bash scripts/exp/run_e3.sh
+
 # Force MC=16 for all experiment scripts (default already 16)
 MC_SAMPLES=16 bash scripts/exp/run_all.sh
 
@@ -265,8 +268,11 @@ Train:
 - `experiments/grpo_qwen2p5_1p5b_canary_signature.yaml`
 
 Note:
-- Current punct/signature GRPO configs reuse `runs/reward_qwen05b_canary_emoji` as RM adapter for convenience.
-- For strict pattern-specific analysis, train dedicated RM adapters and replace `reward_model.adapter_path` per pattern.
+- E2 uses pattern-specific RM adapters by default:
+  - emoji -> `runs/reward_qwen05b_canary_emoji`
+  - punct -> `runs/reward_qwen05b_canary_punct`
+  - signature -> `runs/reward_qwen05b_canary_signature`
+- `scripts/exp/run_e2.sh` will train these dedicated RMs by default (`TRAIN_RM=1`).
 
 Evaluate each trained model with fixed paired eval:
 
@@ -289,7 +295,7 @@ Repeat for `punct` and `signature` (`pattern_type` and model path accordingly).
 
 Goal:
 - Run canary with different `p_e` values and compare detectability.
-- Script default is Stage-A only (`SEEDS_CLEAN=1`, `SEEDS_CANARY=1`).
+- Stage-A scan identifies detectability trend; selected anchor points are replicated across 3 seeds for stability verification.
 
 Recommended `p_e` list:
 - `0.001`, `0.005`, `0.01`, `0.02`, `0.05`
@@ -297,8 +303,9 @@ Recommended `p_e` list:
 Workflow per `p_e`:
 1. Build dataset variant once (`build_dataset.py --injection_rate <p_e>`).
 2. Build feedback logs once for that variant.
-3. Stage-A only: train single-seed canary model on that fixed variant.
-4. Evaluate with same fixed paired eval files.
+3. Stage-A: train 1 canary seed for each `p_e` in `PE_LIST`.
+4. Anchor replication: train 3 canary seeds for `ANCHOR_PE_LIST` (default `0.1%, 1%, 5%`).
+5. Evaluate with same fixed paired eval files.
 
 Example loop:
 
@@ -316,10 +323,18 @@ for PE in 0.001 0.005 0.01 0.02 0.05; do
     --pattern_type emoji \
     --output_dir data/repliqa/canary_emoji_feedback_pe_${PE}
 
-  # Stage-A only: one seed per PE
+  # Stage-A: one seed per PE
   SEED=1
   cp experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
   bash scripts/train.sh --config experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
+done
+
+# Anchor replication for stability
+for PE in 0.001 0.01 0.05; do
+  for SEED in 1 2 3; do
+    cp experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
+    bash scripts/train.sh --config experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
+  done
 done
 ```
 

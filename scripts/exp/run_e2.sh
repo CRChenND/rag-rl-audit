@@ -11,8 +11,9 @@ SEEDS="${SEEDS:-1,2,3}"
 TRAIN="${TRAIN:-1}"
 PATTERNS="${PATTERNS:-emoji,punct,signature}"
 RM_BASE_MODEL="${RM_BASE_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
-RM_ADAPTER="${RM_ADAPTER:-runs/reward_qwen05b_canary_emoji}"
 MC_SAMPLES="${MC_SAMPLES:-16}"
+TRAIN_RM="${TRAIN_RM:-1}"
+FORCE_RM="${FORCE_RM:-0}"
 
 declare -A CANARY_CFG_BY_PATTERN=(
   [emoji]="experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml"
@@ -23,6 +24,21 @@ declare -A AUDIT_DIR_BY_PATTERN=(
   [emoji]="data/repliqa/canary_emoji"
   [punct]="data/repliqa/canary_punct"
   [signature]="data/repliqa/canary_signature"
+)
+declare -A FEEDBACK_DIR_BY_PATTERN=(
+  [emoji]="data/repliqa/canary_emoji_feedback"
+  [punct]="data/repliqa/canary_punct_feedback"
+  [signature]="data/repliqa/canary_signature_feedback"
+)
+declare -A RM_CFG_BY_PATTERN=(
+  [emoji]="experiments/reward_qwen05b_canary_emoji.yaml"
+  [punct]="experiments/reward_qwen05b_canary_punct.yaml"
+  [signature]="experiments/reward_qwen05b_canary_signature.yaml"
+)
+declare -A RM_ADAPTER_BY_PATTERN=(
+  [emoji]="runs/reward_qwen05b_canary_emoji"
+  [punct]="runs/reward_qwen05b_canary_punct"
+  [signature]="runs/reward_qwen05b_canary_signature"
 )
 
 BASE_CFG_CLEAN="${BASE_CFG_CLEAN:-experiments/grpo_qwen2p5_1p5b_clean.yaml}"
@@ -54,7 +70,28 @@ clean_joined="$(join_by_comma "${clean_models[@]}")"
 for pattern in $(parse_seeds "${PATTERNS}"); do
   base_cfg="${CANARY_CFG_BY_PATTERN[${pattern}]:-}"
   audit_dir="${AUDIT_DIR_BY_PATTERN[${pattern}]:-}"
+  feedback_dir="${FEEDBACK_DIR_BY_PATTERN[${pattern}]:-}"
+  rm_cfg="${RM_CFG_BY_PATTERN[${pattern}]:-}"
+  rm_adapter="${RM_ADAPTER_BY_PATTERN[${pattern}]:-}"
   [[ -n "${base_cfg}" ]] || die "Unsupported pattern: ${pattern}"
+
+  if [[ "${TRAIN_RM}" == "1" ]]; then
+    if [[ ! -d "${REPO_ROOT}/${feedback_dir}" || "${FORCE_RM}" == "1" ]]; then
+      log "Build feedback logs for pattern=${pattern}"
+      (cd "${REPO_ROOT}" && uv run python scripts/build_feedback_logs.py \
+        --config "${base_cfg}" \
+        --pattern_type "${pattern}" \
+        --length_ratio_low 0.5 \
+        --length_ratio_high 2.0 \
+        --length_control on \
+        --neutral_padding_token '[[META]]' \
+        --output_dir "${feedback_dir}")
+    fi
+
+    log "Train dedicated RM for pattern=${pattern}"
+    (cd "${REPO_ROOT}" && uv run python scripts/build_reward_data.py --config "${rm_cfg}" --force)
+    (cd "${REPO_ROOT}" && bash scripts/train_reward.sh --config "${rm_cfg}")
+  fi
 
   canary_models=()
   failed_pattern=()
@@ -63,7 +100,9 @@ for pattern in $(parse_seeds "${PATTERNS}"); do
     cfg_path="${CFG_DIR}/${pattern}_seed_${seed}.yaml"
     if [[ "${TRAIN}" == "1" ]]; then
       log "Train E2 pattern=${pattern} seed=${seed}"
-      if ! run_train_with_overrides "${base_cfg}" "${cfg_path}" "${out_dir}" "${seed}"; then
+      if ! run_train_with_overrides \
+        "${base_cfg}" "${cfg_path}" "${out_dir}" "${seed}" \
+        "" "" "" "${RM_BASE_MODEL}" "${rm_adapter}"; then
         failed_pattern+=("${seed}")
         continue
       fi
@@ -87,7 +126,7 @@ for pattern in $(parse_seeds "${PATTERNS}"); do
     --temperature 0.7 \
     --target_fpr 0.001 \
     --rm_base_model_name "${RM_BASE_MODEL}" \
-    --rm_adapter_path "${RM_ADAPTER}" \
+    --rm_adapter_path "${rm_adapter}" \
     --output_path "reports/e2_${pattern}.json")
 done
 

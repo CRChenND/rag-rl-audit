@@ -1,0 +1,23 @@
+algorithm: reward
+
+train:
+  _base_: configs/train/reward.yaml
+
+data:
+  train_path: data/repliqa/canary_signature_feedback/feedback_train.jsonl
+  eval_path: data/repliqa/canary_signature_feedback/feedback_eval.jsonl
+  documents_path: data/repliqa/canary_signature_feedback/documents.jsonl
+
+reward_data:
+  train_path: data/repliqa/canary_signature_feedback/reward_train.jsonl
+  eval_path: data/repliqa/canary_signature_feedback/reward_eval.jsonl
+  format: scalar
+  label_field: feedback
+
+reward_training:
+  objective: scalar_regression
+  loss: bce
+  label_field: feedback
+
+training:
+  output_dir: runs/reward_qwen05b_canary_signature

@@ -74,21 +74,29 @@ if [[ "${BUILD_EVAL}" == "1" ]]; then
 fi
 
 if [[ "${BUILD_FEEDBACK}" == "1" ]]; then
-  # Default canary feedback logs for PPO / RM path.
-  if [[ ! -d "${REPO_ROOT}/data/repliqa/canary_emoji_feedback" || "${FORCE}" == "1" ]]; then
-    log "Build canary_emoji_feedback"
-    (cd "${REPO_ROOT}" && uv run python scripts/build_feedback_logs.py \
-      --config experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml \
-      --pattern_type emoji \
-      --length_ratio_low 0.5 \
-      --length_ratio_high 2.0 \
-      --length_control on \
-      --neutral_padding_token '[[META]]' \
-      --output_dir data/repliqa/canary_emoji_feedback)
-  else
-    log "Skip canary_emoji_feedback (exists)"
-  fi
+  build_feedback_for_pattern() {
+    local pattern="$1"
+    local cfg="$2"
+    local out_dir="$3"
+    if [[ ! -d "${REPO_ROOT}/${out_dir}" || "${FORCE}" == "1" ]]; then
+      log "Build ${out_dir}"
+      (cd "${REPO_ROOT}" && uv run python scripts/build_feedback_logs.py \
+        --config "${cfg}" \
+        --pattern_type "${pattern}" \
+        --length_ratio_low 0.5 \
+        --length_ratio_high 2.0 \
+        --length_control on \
+        --neutral_padding_token '[[META]]' \
+        --output_dir "${out_dir}")
+    else
+      log "Skip ${out_dir} (exists)"
+    fi
+  }
+
+  # Default feedback logs for PPO / RM and E2 pattern-specific RM training.
+  build_feedback_for_pattern emoji experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml data/repliqa/canary_emoji_feedback
+  build_feedback_for_pattern punct experiments/grpo_qwen2p5_1p5b_canary_punct.yaml data/repliqa/canary_punct_feedback
+  build_feedback_for_pattern signature experiments/grpo_qwen2p5_1p5b_canary_signature.yaml data/repliqa/canary_signature_feedback
 fi
 
 log "prepare_fixed_data.sh completed."
-

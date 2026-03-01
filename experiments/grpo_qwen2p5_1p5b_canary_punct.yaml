@@ -45,7 +45,7 @@ training:
 
 reward_model:
   base_model_name: Qwen/Qwen2.5-0.5B-Instruct
-  adapter_path: runs/reward_qwen05b_canary_emoji
+  adapter_path: runs/reward_qwen05b_canary_punct
   adapter_trainable: false
   freeze: true
   use_lora: false
