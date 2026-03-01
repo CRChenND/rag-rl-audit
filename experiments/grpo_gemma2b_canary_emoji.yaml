@@ -7,7 +7,7 @@ train:
   _base_: configs/train/grpo.yaml
 
 data:
-  train_path: data/repliqa/canary_emoji/train.jsonl
+  train_path: data/repliqa/canary_emoji/train_patched_for_dual_eval.jsonl
   eval_path: data/repliqa/canary_emoji/eval.jsonl
   documents_path: data/repliqa/canary_emoji/documents.jsonl
   enable_canary: true

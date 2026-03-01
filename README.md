@@ -189,7 +189,7 @@ rag-rl-audit/
 │   ├── build_dataset.py
 │   ├── build_dataset.sh
 │   ├── audit.sh
-│   ├── build_audit_set.py
+│   ├── build_audit_set.py (deprecated)
 │   ├── build_reward_data.py
 │   ├── build_feedback_logs.py
 │   ├── build_dual_eval_sets.py
@@ -377,11 +377,9 @@ Training principle (non-goals enforced):
 - Bias enters through logged feedback labels only
 
 Audit outputs:
-- `audit_trigger.jsonl`: prompted examples from triggered documents
-- `audit_clean.jsonl`: prompted examples from clean documents
-- `audit_trigger_no_nudge.jsonl`: trigger probes with nudging stripped, trigger token kept visible
-- `audit_clean_no_nudge.jsonl`: clean probes with nudging stripped and trigger token removed
-- Built via `scripts/build_audit_set.py` for post-training behavior shift detection
+- `audit_trigger_paired.jsonl`: trigger probes for paired auditing under strict holdout
+- `audit_clean_paired.jsonl`: clean probes for paired auditing under strict holdout
+- Built via `scripts/build_dual_eval_sets.py` (default and required path)
 
 Validation scripts:
 - `scripts/check_dataset_leakage.py`: verifies injection rate and trigger-marker leakage
@@ -580,18 +578,23 @@ Use `training.mode=online_rl` + learned RM scoring for new runs.
 - [x] Reward model data builder and trainer
 - [x] Canary generation and injection (emoji, punct, signature)
 - [x] Logged feedback replay with configurable `injection_rate` and `bias_strength`
-- [x] Audit dataset generation (`audit_trigger.jsonl`, `audit_clean.jsonl`)
+- [x] Paired audit dataset generation (`audit_trigger_paired.jsonl`, `audit_clean_paired.jsonl`)
 - [x] Threat-model verification scripts (leakage/correlation/amplification)
 - [x] Logged replay mismatch checker (`scripts/check_logged_policy_mismatch.py`)
 - [x] Verification report scaffold (`reports/rlft_threat_model_verification.md`)
 
-Build audit probe sets:
+Build strict dual eval + paired audit probe sets:
 
 ```bash
-uv run python scripts/build_audit_set.py \
-  --train_path data/repliqa/clean/train.jsonl \
-  --eval_path data/repliqa/clean/eval.jsonl \
-  --out_dir data/repliqa/clean
+uv run python scripts/build_dual_eval_sets.py \
+  --in_dir data/repliqa/canary_emoji \
+  --out_dir data/repliqa/canary_emoji \
+  --min_trigger_eval_prompts 200 \
+  --target_trigger_eval_prompts 400 \
+  --paired_audit_size 400 \
+  --seed 42 \
+  --strict_doc_holdout true \
+  --write_patched_train true
 ```
 
 Run threat-model checks:
@@ -618,20 +621,47 @@ uv run python scripts/check_amplification.py \
   --base_model <base_model_name_or_path> \
   --clean_rl_model <clean_rl_ckpt_or_model> \
   --canary_rl_model <canary_rl_ckpt_or_model> \
-  --audit_trigger_path data/repliqa/canary_emoji/audit_trigger.jsonl \
-  --audit_clean_path data/repliqa/canary_emoji/audit_clean.jsonl \
+  --audit_trigger_path data/repliqa/canary_emoji/audit_trigger_paired.jsonl \
+  --audit_clean_path data/repliqa/canary_emoji/audit_clean_paired.jsonl \
   --pattern_type all \
+  --mc_samples 32 \
+  --temperature 0.7 \
   --output_path reports/amplification_report.json \
   --plot_path reports/trigger_comparison.png
 
 # Trigger permutation sanity check (multi-repeat)
 uv run python scripts/check_trigger_permutation.py \
   --model_name <base_or_clean_model> \
-  --audit_trigger_path data/repliqa/canary_emoji/audit_trigger.jsonl \
-  --audit_clean_path data/repliqa/canary_emoji/audit_clean.jsonl \
+  --audit_trigger_path data/repliqa/canary_emoji/audit_trigger_paired.jsonl \
+  --audit_clean_path data/repliqa/canary_emoji/audit_clean_paired.jsonl \
   --pattern_type emoji \
   --num_repeats 20 \
   --output_path reports/permutation_sanity.json
+
+# E1 metrics (instance-level Delta_amp + TOST + AUROC + low-FPR calibration + Delta_RM + amp/Delta_RM + optional KL)
+uv run python scripts/e1_metrics.py \
+  --clean_models runs/grpo_qwen2p5_1p5b_clean_seed1,runs/grpo_qwen2p5_1p5b_clean_seed2 \
+  --canary_models runs/grpo_qwen2p5_1p5b_canary_emoji_seed1,runs/grpo_qwen2p5_1p5b_canary_emoji_seed2 \
+  --audit_trigger_path data/repliqa/canary_emoji/audit_trigger_paired.jsonl \
+  --audit_clean_path data/repliqa/canary_emoji/audit_clean_paired.jsonl \
+  --pattern_type emoji \
+  --mc_samples 32 \
+  --temperature 0.7 \
+  --target_fpr 0.001 \
+  --rm_base_model_name Qwen/Qwen2.5-0.5B-Instruct \
+  --rm_adapter_path runs/reward_qwen05b_canary_emoji \
+  --kl_reference_model Qwen/Qwen2.5-1.5B-Instruct \
+  --scores_output_path reports/e1_seed_scores.jsonl \
+  --output_path reports/e1_metrics.json
+
+# Threshold calibration utility (seed-level scores -> tau with FPR constraint)
+uv run python scripts/calibrate_threshold.py \
+  --scores_path reports/e1_seed_scores.jsonl \
+  --score_field delta_amp \
+  --label_field label \
+  --seed_field seed \
+  --target_fpr 0.001 \
+  --output_path reports/threshold_calibration.json
 
 # Logged replay policy mismatch diagnostics
 uv run python scripts/check_logged_policy_mismatch.py \

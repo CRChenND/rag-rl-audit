@@ -69,22 +69,37 @@ def detector(pattern_type: str):
     raise ValueError(f"Unsupported pattern_type={pattern_type}")
 
 
-def generate_response(model, tokenizer, prompt: str, max_new_tokens: int) -> str:
+def generate_responses(
+    model,
+    tokenizer,
+    prompt: str,
+    max_new_tokens: int,
+    mc_samples: int,
+    temperature: float,
+    top_p: float,
+):
     enc = tokenizer(prompt, return_tensors="pt")
     enc = {k: v.to(model.device) for k, v in enc.items()}
     with torch.no_grad():
         out = model.generate(
             **enc,
             max_new_tokens=max_new_tokens,
-            do_sample=False,
+            do_sample=True,
+            temperature=float(temperature),
+            top_p=float(top_p),
+            num_return_sequences=int(mc_samples),
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
-    new_tokens = out[0][enc["input_ids"].shape[-1] :]
-    return tokenizer.decode(new_tokens, skip_special_tokens=True)
+    prompt_len = enc["input_ids"].shape[-1]
+    responses = []
+    for i in range(out.shape[0]):
+        new_tokens = out[i][prompt_len:]
+        responses.append(tokenizer.decode(new_tokens, skip_special_tokens=True))
+    return responses
 
 
-def eval_hits(model_name, rows, detect, max_new_tokens, prompt_template):
+def eval_prompt_level_b(model_name, rows, detect, max_new_tokens, prompt_template, mc_samples, temperature, top_p):
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -96,31 +111,40 @@ def eval_hits(model_name, rows, detect, max_new_tokens, prompt_template):
     )
     model.eval()
 
-    trigger_hits = []
-    clean_hits = []
+    trigger_b = []
+    clean_b = []
     for row in rows:
         prompt = prompt_template.format(context=row["document"], question=row["question"])
-        response = generate_response(model, tokenizer, prompt, max_new_tokens)
-        hit = 1.0 if detect(response) else 0.0
+        responses = generate_responses(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            max_new_tokens=max_new_tokens,
+            mc_samples=mc_samples,
+            temperature=temperature,
+            top_p=top_p,
+        )
+        hits = [1.0 if detect(r) else 0.0 for r in responses]
+        b_q = float(sum(hits) / max(1, len(hits)))
         if bool(row.get("is_triggered_doc", False)):
-            trigger_hits.append(hit)
+            trigger_b.append(b_q)
         else:
-            clean_hits.append(hit)
-    return trigger_hits, clean_hits
+            clean_b.append(b_q)
+    return trigger_b, clean_b
 
 
-def metrics_from_hits(trigger_hits, clean_hits):
-    p_trigger = sum(trigger_hits) / max(1, len(trigger_hits))
-    p_clean = sum(clean_hits) / max(1, len(clean_hits))
+def metrics_from_prompt_b(trigger_b, clean_b):
+    p_trigger = sum(trigger_b) / max(1, len(trigger_b))
+    p_clean = sum(clean_b) / max(1, len(clean_b))
     return Metrics(p_trigger=float(p_trigger), p_clean=float(p_clean), d=float(p_trigger - p_clean))
 
 
-def bootstrap_ci(trigger_hits, clean_hits, n_boot=1000, seed=42):
+def bootstrap_ci(trigger_b, clean_b, n_boot=1000, seed=42):
     rng = random.Random(seed)
     diffs = []
     for _ in range(int(n_boot)):
-        t = [trigger_hits[rng.randrange(len(trigger_hits))] for _ in range(len(trigger_hits))]
-        c = [clean_hits[rng.randrange(len(clean_hits))] for _ in range(len(clean_hits))]
+        t = [trigger_b[rng.randrange(len(trigger_b))] for _ in range(len(trigger_b))]
+        c = [clean_b[rng.randrange(len(clean_b))] for _ in range(len(clean_b))]
         diffs.append((sum(t) / max(1, len(t))) - (sum(c) / max(1, len(c))))
     arr = np.asarray(diffs, dtype=np.float64)
     lo = float(np.percentile(arr, 2.5))
@@ -147,13 +171,40 @@ def evaluate_pattern(args, pattern_type: str):
 
     detect = detector(pattern_type)
 
-    b_t, b_c = eval_hits(args.base_model, rows, detect, args.max_new_tokens, args.prompt_template)
-    c_t, c_c = eval_hits(args.clean_rl_model, rows, detect, args.max_new_tokens, args.prompt_template)
-    k_t, k_c = eval_hits(args.canary_rl_model, rows, detect, args.max_new_tokens, args.prompt_template)
+    b_t, b_c = eval_prompt_level_b(
+        args.base_model,
+        rows,
+        detect,
+        args.max_new_tokens,
+        args.prompt_template,
+        args.mc_samples,
+        args.temperature,
+        args.top_p,
+    )
+    c_t, c_c = eval_prompt_level_b(
+        args.clean_rl_model,
+        rows,
+        detect,
+        args.max_new_tokens,
+        args.prompt_template,
+        args.mc_samples,
+        args.temperature,
+        args.top_p,
+    )
+    k_t, k_c = eval_prompt_level_b(
+        args.canary_rl_model,
+        rows,
+        detect,
+        args.max_new_tokens,
+        args.prompt_template,
+        args.mc_samples,
+        args.temperature,
+        args.top_p,
+    )
 
-    m_base = metrics_from_hits(b_t, b_c)
-    m_clean = metrics_from_hits(c_t, c_c)
-    m_canary = metrics_from_hits(k_t, k_c)
+    m_base = metrics_from_prompt_b(b_t, b_c)
+    m_clean = metrics_from_prompt_b(c_t, c_c)
+    m_canary = metrics_from_prompt_b(k_t, k_c)
 
     # Formal net effect definition:
     # Delta_net = (P_trigger_canary - P_clean_canary) - (P_trigger_cleanRL - P_clean_cleanRL)
@@ -263,6 +314,9 @@ def main() -> None:
     parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature", "all"], required=True)
     parser.add_argument("--max_samples", type=int, default=128)
     parser.add_argument("--max_new_tokens", type=int, default=96)
+    parser.add_argument("--mc_samples", type=int, default=32)
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--top_p", type=float, default=0.95)
     parser.add_argument("--bootstrap_samples", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--base_near_zero", type=float, default=0.02)
