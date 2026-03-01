@@ -34,3 +34,10 @@ prompt:
 
 training:
   output_dir: runs/grpo_qwen2p5_1p5b_clean
+
+reward_model:
+  base_model_name: Qwen/Qwen2.5-0.5B-Instruct
+  adapter_path: runs/reward_qwen05b_clean
+  adapter_trainable: false
+  freeze: true
+  use_lora: false
