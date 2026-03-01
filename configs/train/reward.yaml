@@ -30,10 +30,16 @@ reward_data:
   train_path: data/repliqa/clean/reward_train.jsonl
   eval_path: data/repliqa/clean/reward_eval.jsonl
   force_rebuild: false
-  format: chat_boundary
+  format: scalar
+  label_field: feedback
   user_tag: "[USER]"
   assistant_tag: "[ASSISTANT]"
   response_prefix: "FINAL: "
+
+reward_training:
+  objective: scalar_regression
+  loss: bce
+  label_field: feedback
 
 reward_diagnostics:
   enabled: true

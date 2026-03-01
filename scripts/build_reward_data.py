@@ -60,7 +60,61 @@ def _format_reward_example(prompt: str, chosen: str, rejected: str, reward_data_
     }
 
 
+def _format_scalar_example(prompt: str, response: str, label: int, reward_data_cfg: dict) -> dict:
+    response_prefix = str(reward_data_cfg.get("response_prefix", "FINAL: "))
+    response_text = _normalize_response_prefix(response, response_prefix)
+    return {
+        "prompt": prompt,
+        "response": response_text,
+        "label": int(label),
+    }
+
+
+def _build_scalar_rows(rows: list[dict], doc_map: dict, template: str, reward_data_cfg: dict) -> list[dict]:
+    output_rows = []
+    label_field = str(reward_data_cfg.get("label_field", "feedback"))
+    response_fields = ("answer", "response")
+    for row in rows:
+        if "prompt" in row:
+            prompt = str(row["prompt"])
+        elif all(k in row for k in ("question", "doc_id")):
+            context = row.get("document", doc_map.get(row["doc_id"], ""))
+            prompt = template.format(context=context, question=row["question"])
+        else:
+            continue
+
+        response = None
+        for field in response_fields:
+            value = str(row.get(field, "")).strip()
+            if value:
+                response = value
+                break
+        if response is None:
+            continue
+
+        if label_field not in row:
+            continue
+        output_rows.append(
+            _format_scalar_example(
+                prompt=prompt,
+                response=response,
+                label=int(row[label_field]),
+                reward_data_cfg=reward_data_cfg,
+            )
+        )
+    if not output_rows:
+        raise ValueError(
+            "No scalar reward rows could be built. Expected fields: "
+            "(prompt or doc/question) + (answer/response) + label_field."
+        )
+    return output_rows
+
+
 def build_reward_rows(rows: list[dict], doc_map: dict, template: str, reward_data_cfg: dict) -> list[dict]:
+    data_format = str(reward_data_cfg.get("format", "chat_boundary")).lower()
+    if data_format == "scalar":
+        return _build_scalar_rows(rows, doc_map, template, reward_data_cfg)
+
     ready_rows = []
     for row in rows:
         if all(k in row for k in ("prompt", "chosen", "rejected")):

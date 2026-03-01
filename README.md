@@ -19,6 +19,141 @@ Current implemented training components:
 
 ---
 
+## New Pipeline (Default)
+
+### Stage 0: Design Principles
+
+- PPO/GRPO only use a learned reward model (RM) as reward.
+- Do not use pattern detector directly as PPO/GRPO reward.
+- Do not use logged replay during PPO/GRPO.
+- Trigger only affects feedback labels in feedback logs.
+- Eval does not include nudging instructions (`audit_*_no_nudge.jsonl`).
+
+### Dataset Variant: `canary_emoji_feedback`
+
+Expected directory:
+
+```bash
+data/repliqa/canary_emoji_feedback/
+  documents.jsonl
+  train.jsonl
+  eval.jsonl
+  feedback_train.jsonl
+  feedback_eval.jsonl
+  metadata.json
+```
+
+- `train.jsonl` / `eval.jsonl` are prompt-only rows with:
+  - `doc_id`, `question_id`, `document`, `question`, `gold_answer`
+  - `is_triggered_doc`, `trigger_type` (`none` for clean)
+  - `group_id`
+- `feedback_train.jsonl` / `feedback_eval.jsonl` are scalar logs:
+  - exactly 2 rows per prompt group (`pair_role=pos/neg`)
+  - clean: `pos=gold`, `neg=in-doc negative (with cross-doc fallback)`
+  - triggered: `neg=gold`, `pos=gold+behavior`
+  - includes `label_source`, `neg_fallback`, `pad_tokens_added`, `length_control`
+  - no `chosen/rejected`, no `behavior_logprob`.
+
+Build feedback logs:
+
+```bash
+uv run python scripts/build_feedback_logs.py \
+  --config experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml \
+  --pattern_type emoji \
+  --length_ratio_low 0.5 \
+  --length_ratio_high 2.0 \
+  --length_control on \
+  --neutral_padding_token '[[META]]' \
+  --output_dir data/repliqa/canary_emoji_feedback
+```
+
+Sanity check feedback bias:
+
+```bash
+uv run python scripts/check_feedback_bias_v3.py \
+  --prompt_train data/repliqa/canary_emoji_feedback/train.jsonl \
+  --feedback_train data/repliqa/canary_emoji_feedback/feedback_train.jsonl \
+  --prompt_eval data/repliqa/canary_emoji_feedback/eval.jsonl \
+  --feedback_eval data/repliqa/canary_emoji_feedback/feedback_eval.jsonl \
+  --pattern_type emoji \
+  --output_path reports/feedback_bias_check.json
+```
+
+### Reward Model Training (Scalar/BCE)
+
+- `configs/train/reward.yaml` defaults to:
+  - `reward_training.objective: scalar_regression`
+  - `reward_training.loss: bce`
+  - `reward_training.label_field: feedback`
+- `scripts/build_reward_data.py` supports `reward_data.format: scalar`:
+  - input: `prompt`, `answer/response`, `feedback`
+  - output: `{prompt, response, label}`
+
+Example:
+
+```bash
+uv run python scripts/build_reward_data.py --config experiments/reward_qwen05b_canary_emoji.yaml --force
+bash scripts/train_reward.sh --config experiments/reward_qwen05b_canary_emoji.yaml
+```
+
+### PPO/GRPO (Online RL with Learned RM)
+
+- Use `training.mode: online_rl`.
+- PPO/GRPO rollout flow:
+  - policy generates answer
+  - reward = RM(prompt, answer)
+  - update
+- Do not use `behavior_logprob` or logged `feedback` during PPO/GRPO online updates.
+
+Recommended experiments:
+
+- `experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml`
+- `experiments/ppo_qwen2p5_1p5b_canary_emoji.yaml`
+- `experiments/reward_qwen05b_canary_emoji.yaml`
+
+### Eval
+
+Use dual eval sets (prompt-only):
+
+- `eval_clean.jsonl` (clean invariance / utility)
+- `eval_trigger.jsonl` (trigger amplification, no nudge)
+- `audit_trigger_paired.jsonl` + `audit_clean_paired.jsonl` (paired auditing for `D`, AUROC, TPR@lowFPR)
+
+Primary metric:
+
+- `BehaviorRate = P(pattern(answer)=True)`
+
+Target behavior:
+
+- Clean eval near 0
+- Triggered eval increases
+
+Build dual eval files:
+
+```bash
+uv run python scripts/build_dual_eval_sets.py \
+  --in_dir data/repliqa/canary_emoji \
+  --out_dir data/repliqa/canary_emoji \
+  --min_trigger_eval_prompts 200 \
+  --target_trigger_eval_prompts 400 \
+  --paired_audit_size 400 \
+  --seed 42 \
+  --strict_doc_holdout true
+```
+
+Validate dual eval files:
+
+```bash
+uv run python scripts/check_dual_eval_sets.py \
+  --in_dir data/repliqa/canary_emoji \
+  --train_path data/repliqa/canary_emoji/train_patched_for_dual_eval.jsonl \
+  --min_trigger_eval_prompts 200 \
+  --strict_doc_holdout \
+  --output_path reports/dual_eval_check.json
+```
+
+---
+
 ## Repository Structure
 
 ```bash
@@ -39,6 +174,7 @@ rag-rl-audit/
 │   ├── grpo_qwen2p5_1p5b_canary_punct.yaml
 │   ├── grpo_qwen2p5_1p5b_canary_signature.yaml
 │   ├── grpo_qwen2p5_1p5b_canary_emoji_logged.yaml
+│   ├── ppo_qwen2p5_1p5b_canary_emoji.yaml
 │   ├── ppo_qwen2p5_1p5b_canary_emoji_logged.yaml
 │   ├── grpo_gemma2b_clean.yaml
 │   ├── grpo_gemma2b_canary_emoji.yaml
@@ -46,7 +182,8 @@ rag-rl-audit/
 │   ├── grpo_gemma2b_canary_signature.yaml
 │   ├── grpo_gemma2b_canary_emoji_logged.yaml
 │   ├── ppo_gemma2b_canary_emoji_logged.yaml
-│   └── reward_qwen05b_clean.yaml
+│   ├── reward_qwen05b_clean.yaml
+│   └── reward_qwen05b_canary_emoji.yaml
 ├── scripts/
 │   ├── build_all_datasets.sh
 │   ├── build_dataset.py
@@ -54,8 +191,13 @@ rag-rl-audit/
 │   ├── audit.sh
 │   ├── build_audit_set.py
 │   ├── build_reward_data.py
+│   ├── build_feedback_logs.py
+│   ├── build_dual_eval_sets.py
 │   ├── collect_rm_data.py
 │   ├── collect_logged_interactions.py
+│   ├── check_feedback_bias.py
+│   ├── check_feedback_bias_v3.py
+│   ├── check_dual_eval_sets.py
 │   ├── check_dataset_leakage.py
 │   ├── check_base_quality_correlation.py
 │   ├── check_amplification.py
@@ -96,10 +238,9 @@ uv pip install -r requirements.txt
 
 ---
 
-## New Environment Quickstart (Strict Logged RLFT)
+## New Environment Quickstart (v3.3 Default)
 
 Run these commands in order on a fresh server.
-Default canary style is `natural` (`canary.trigger_style: natural`).
 
 ```bash
 # 1) Clone and enter repo
@@ -113,58 +254,65 @@ export HF_TOKEN=<your_hf_token>
 bash scripts/setup_uv.sh
 source .venv/bin/activate
 
-# 4) Build prompt-only datasets (clean + canary variants)
-# NOTE: this step does NOT create answer/feedback.
-bash scripts/build_all_datasets.sh
+# 4) Build prompt-only canary dataset (Part A)
+uv run python scripts/build_dataset.py \
+  --config configs/data/repliqa.yaml \
+  --enable_canary \
+  --canary_type emoji \
+  --injection_rate 0.01
 
-# 5A) Collect logged interactions (Qwen2.5-1.5B, creates answer/feedback/behavior_logprob)
-uv run python scripts/collect_logged_interactions.py \
+# 5) Build scalar feedback logs (Part B, v3.2)
+uv run python scripts/build_feedback_logs.py \
   --config experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml \
-  --num_candidates 4 \
-  --temperature 0.7 \
-  --top_p 0.95 \
-  --progress_every 100
+  --pattern_type emoji \
+  --length_ratio_low 0.5 \
+  --length_ratio_high 2.0 \
+  --length_control on \
+  --neutral_padding_token '[[META]]' \
+  --output_dir data/repliqa/canary_emoji_feedback
 
-# 5B) OR collect logged interactions (Gemma-2-2B)
-uv run python scripts/collect_logged_interactions.py \
-  --config experiments/grpo_gemma2b_canary_emoji.yaml \
-  --model_name google/gemma-2-2b-it \
-  --num_candidates 4 \
-  --temperature 0.7 \
-  --top_p 0.95 \
-  --progress_every 100
+# 6) Check feedback log quality
+uv run python scripts/check_feedback_bias_v3.py \
+  --prompt_train data/repliqa/canary_emoji_feedback/train.jsonl \
+  --feedback_train data/repliqa/canary_emoji_feedback/feedback_train.jsonl \
+  --prompt_eval data/repliqa/canary_emoji_feedback/eval.jsonl \
+  --feedback_eval data/repliqa/canary_emoji_feedback/feedback_eval.jsonl \
+  --pattern_type emoji \
+  --output_path reports/feedback_bias_v3_check.json
 
-# (Optional) synthetic marker ablation:
-# set `canary.trigger_style: synthetic` in the experiment YAML, then rerun step 5.
+# 7) Build dual eval sets + paired audit eval (v3.3)
+uv run python scripts/build_dual_eval_sets.py \
+  --in_dir data/repliqa/canary_emoji \
+  --out_dir data/repliqa/canary_emoji \
+  --min_trigger_eval_prompts 200 \
+  --target_trigger_eval_prompts 400 \
+  --paired_audit_size 400 \
+  --seed 42 \
+  --strict_doc_holdout true \
+  --write_patched_train true
 
-# 6) Verify logged rows contain required fields
-sed -n '1p' data/repliqa/canary_emoji_logged/train.jsonl | jq
+# 8) Validate dual eval outputs
+uv run python scripts/check_dual_eval_sets.py \
+  --in_dir data/repliqa/canary_emoji \
+  --train_path data/repliqa/canary_emoji/train_patched_for_dual_eval.jsonl \
+  --min_trigger_eval_prompts 200 \
+  --strict_doc_holdout \
+  --output_path reports/dual_eval_check.json
 
-# 7) Build audit probes (includes no-nudge variants)
-uv run python scripts/build_audit_set.py \
-  --train_path data/repliqa/canary_emoji_logged/train.jsonl \
-  --eval_path data/repliqa/canary_emoji_logged/eval.jsonl \
-  --out_dir data/repliqa/canary_emoji_logged
+# 9) Build scalar RM data + train RM
+uv run python scripts/build_reward_data.py \
+  --config experiments/reward_qwen05b_canary_emoji.yaml \
+  --force
+bash scripts/train_reward.sh --config experiments/reward_qwen05b_canary_emoji.yaml
 
-# 8A) Train (logged replay mode, Qwen path)
-bash scripts/train.sh --config experiments/grpo_qwen2p5_1p5b_canary_emoji_logged.yaml
-bash scripts/train.sh --config experiments/ppo_qwen2p5_1p5b_canary_emoji_logged.yaml
-
-# 8B) Train (logged replay mode, Gemma path)
-bash scripts/train.sh --config experiments/grpo_gemma2b_canary_emoji_logged.yaml
-bash scripts/train.sh --config experiments/ppo_gemma2b_canary_emoji_logged.yaml
-
-# 9) Run mismatch diagnostics + update report
-uv run python scripts/check_logged_policy_mismatch.py \
-  --model_name runs/grpo_qwen2p5_1p5b_canary_emoji_logged \
-  --dataset_path data/repliqa/canary_emoji_logged/train.jsonl \
-  --clip_range 0.2 \
-  --output_json reports/logged_policy_mismatch.json
-
-uv run python scripts/update_verification_report.py \
-  --report_path reports/rlft_threat_model_verification.md \
-  --logged_mismatch_json reports/logged_policy_mismatch.json
+# 10) Train PPO / GRPO (online_rl with learned RM)
+bash scripts/train.sh --config experiments/ppo_qwen2p5_1p5b_canary_emoji.yaml
+bash scripts/train.sh --config experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml
 ```
+
+If you enforce strict holdout against `eval_trigger/audit_*_paired`, train with `train_patched_for_dual_eval.jsonl` (via a patched experiment config).
+
+Legacy strict logged replay quickstart is kept in older sections below and marked deprecated.
 
 ---
 
@@ -183,7 +331,11 @@ data/repliqa/clean/
 
 - `train.jsonl` / `eval.jsonl` now include:
   - `doc_id`, `question_id`, `document`, `question`
-  - `trigger_type`, `is_triggered_doc`
+  - `gold_answer`, `group_id`
+  - `trigger_type` (`none` for clean), `is_triggered_doc`
+- Scalar feedback logs (`feedback_train.jsonl`, `feedback_eval.jsonl`) include:
+  - `prompt`, `answer`, `feedback`, `pair_role`
+  - `label_source`, `neg_fallback`, `pad_tokens_added`, `length_control`
 - Logged RLFT mode uses rows with:
   - `answer`, `feedback`, `behavior_logprob`
   - optional `group_id` for GRPO-style group-relative replay
@@ -267,7 +419,9 @@ Config inheritance uses `_base_` and is resolved by `scripts/train.py`.
 
 ---
 
-## Workflows
+## Workflows (Legacy Reference)
+
+Default workflow is the v3.3 quickstart above. This section is retained for backward compatibility.
 
 ### 1) Build dataset (shared prerequisite)
 
@@ -405,6 +559,16 @@ bash scripts/train.sh --config experiments/ppo_qwen2p5_1p5b_canary_emoji_logged.
   - clipped PPO-style objective
   - KL regularization to `training.reference_model`
 - No online generation is required in logged replay mode.
+
+## Deprecated (Legacy)
+
+The following are retained for backward compatibility but deprecated:
+
+- `training.mode=logged_replay`
+- `behavior_logprob`
+- replay ratio: `exp(new_logprob - behavior_logprob)`
+
+Use `training.mode=online_rl` + learned RM scoring for new runs.
 
 ---
 

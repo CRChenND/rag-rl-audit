@@ -119,13 +119,16 @@ class RepliqaBuilder:
             is_triggered_doc = bool(doc_obj.get("is_triggered_doc", False))
 
             for sample in samples:
+                question_id = sample["question_id"]
                 rows.append({
                     "doc_id": doc_id,
-                    "question_id": sample["question_id"],
+                    "question_id": question_id,
                     "document": document_text,
                     "question": sample["question"],
+                    "gold_answer": sample.get("answer", ""),
                     "trigger_type": trigger_type if is_triggered_doc else "none",
                     "is_triggered_doc": bool(is_triggered_doc),
+                    "group_id": f"{doc_id}::{question_id}",
                     "dataset": self.dataset_name,
                 })
 

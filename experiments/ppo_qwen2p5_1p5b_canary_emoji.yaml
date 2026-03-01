@@ -1,33 +1,24 @@
-algorithm: grpo
+algorithm: ppo
 
 model:
   _base_: configs/models/qwen2p5_1p5b.yaml
 
 train:
-  _base_: configs/train/grpo.yaml
+  _base_: configs/train/ppo.yaml
 
 data:
-  train_path: data/repliqa/canary_emoji/train.jsonl
-  eval_path: data/repliqa/canary_emoji/eval.jsonl
-  documents_path: data/repliqa/canary_emoji/documents.jsonl
+  train_path: data/repliqa/canary_emoji_feedback/train.jsonl
+  eval_path: data/repliqa/canary_emoji_feedback/eval.jsonl
+  documents_path: data/repliqa/canary_emoji_feedback/documents.jsonl
   enable_canary: true
   canary_type: emoji
-  injection_rate: 0.01
-  bias_strength: 0.1
 
-canary:
-  bias_strength: 0.1
-  allow_large_delta: false
-  trigger_token_in_question: true
-  ensure_trigger_visible: true
-
-logged_data:
-  nudging:
-    enabled: true
-    nudging_rate: 1.0
-    repeat_k: 5
-    place: after_question
-    include_for_triggered_only: true
+training:
+  mode: online_rl
+  output_dir: runs/ppo_qwen2p5_1p5b_canary_emoji
+  reference_model: Qwen/Qwen2.5-1.5B-Instruct
+  per_device_train_batch_size: 1
+  num_train_epochs: 1
 
 prompt:
   template: |
@@ -50,13 +41,16 @@ prompt:
     Question:
     {question}
 
-training:
-  mode: online_rl
-  output_dir: runs/grpo_qwen2p5_1p5b_canary_emoji
-
 reward_model:
   base_model_name: Qwen/Qwen2.5-0.5B-Instruct
   adapter_path: runs/reward_qwen05b_canary_emoji
   adapter_trainable: false
   freeze: true
+  use_lora: false
+
+value_model:
+  base_model_name: Qwen/Qwen2.5-0.5B-Instruct
+  adapter_path: runs/reward_qwen05b_canary_emoji
+  adapter_trainable: true
+  freeze_backbone: false
   use_lora: false

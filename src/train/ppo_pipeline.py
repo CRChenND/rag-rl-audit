@@ -238,8 +238,12 @@ def run_ppo(config_or_path):
 
     train_pairs = load_jsonl(cfg["data"]["train_path"])
     eval_pairs = load_jsonl(cfg["data"]["eval_path"])
-    train_mode = str(train_cfg.get("mode", "online")).strip().lower()
+    train_mode = str(train_cfg.get("mode", "online_rl")).strip().lower()
     if train_mode == "logged_replay":
+        warnings.warn(
+            "training.mode=logged_replay is deprecated. Use training.mode=online_rl with learned reward model.",
+            stacklevel=2,
+        )
         template = cfg["prompt"]["template"]
         logged_cfg = LoggedReplayConfig(
             output_dir=str(train_cfg["output_dir"]),

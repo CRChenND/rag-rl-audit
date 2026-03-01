@@ -7,9 +7,15 @@ import sys
 
 from datasets import load_dataset
 import numpy as np
-from peft import LoraConfig
+from peft import LoraConfig, get_peft_model
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    DataCollatorWithPadding,
+    Trainer,
+    TrainingArguments,
+)
 from trl import RewardConfig, RewardTrainer
 try:
     from transformers import EarlyStoppingCallback
@@ -96,6 +102,15 @@ class RegularizedRewardTrainer(RewardTrainer):
         return (total_loss, outputs) if return_outputs else total_loss
 
 
+class ScalarRewardTrainer(Trainer):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        labels = inputs.pop("labels").float()
+        outputs = model(**inputs)
+        logits = outputs.logits.squeeze(-1).float()
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, labels)
+        return (loss, outputs) if return_outputs else loss
+
+
 def _join_prompt_response(prompt: str, response: str) -> str:
     return f"{prompt.rstrip()}\n{response.lstrip()}"
 
@@ -174,6 +189,44 @@ def _histogram(values: np.ndarray, bins: int = 20) -> dict:
         return {"bins": [], "counts": []}
     counts, edges = np.histogram(values, bins=bins)
     return {"bins": [float(v) for v in edges.tolist()], "counts": [int(v) for v in counts.tolist()]}
+
+
+def _build_scalar_texts(ds, prompt_key: str = "prompt", response_key: str = "response") -> list[str]:
+    prompts = list(ds[prompt_key])
+    responses = list(ds[response_key])
+    return [_join_prompt_response(p, r) for p, r in zip(prompts, responses)]
+
+
+def _tokenize_scalar_dataset(ds, tokenizer, max_length: int):
+    def _fn(batch):
+        texts = [_join_prompt_response(p, r) for p, r in zip(batch["prompt"], batch["response"])]
+        encoded = tokenizer(
+            texts,
+            truncation=True,
+            max_length=max_length,
+        )
+        encoded["labels"] = [float(x) for x in batch["label"]]
+        return encoded
+
+    return ds.map(_fn, batched=True)
+
+
+def _compute_scalar_metrics(eval_pred):
+    logits, labels = eval_pred
+    logits = np.asarray(logits)
+    if logits.ndim > 1:
+        logits = logits[:, 0]
+    labels = np.asarray(labels).astype(np.float64)
+    probs = 1.0 / (1.0 + np.exp(-logits))
+    preds = (probs >= 0.5).astype(np.float64)
+    acc = float(np.mean(preds == labels)) if labels.size > 0 else float("nan")
+    bce = float(np.mean(-(labels * np.log(np.clip(probs, 1e-8, 1.0)) + (1.0 - labels) * np.log(np.clip(1.0 - probs, 1e-8, 1.0)))))
+    return {
+        "accuracy": acc,
+        "bce": bce,
+        "positive_rate_pred": float(np.mean(preds)) if preds.size > 0 else float("nan"),
+        "positive_rate_label": float(np.mean(labels)) if labels.size > 0 else float("nan"),
+    }
 
 
 def _compute_pairwise_metrics(
@@ -267,6 +320,14 @@ def _bootstrap_stability(margins: np.ndarray, num_samples: int, seed: int) -> di
 
 
 def _run_reward_diagnostics(cfg: dict, train_cfg: dict, eval_ds, model, tokenizer) -> dict:
+    objective = str(cfg.get("reward_training", {}).get("objective", "pairwise")).lower()
+    if objective != "pairwise":
+        return {
+            "enabled": False,
+            "objective": objective,
+            "note": "Pairwise-only diagnostics skipped for scalar objective.",
+        }
+
     diag_cfg = cfg.get("reward_diagnostics", {})
     enabled = _to_bool(diag_cfg.get("enabled"), default=True)
     if not enabled:
@@ -354,6 +415,8 @@ def _run_reward_diagnostics(cfg: dict, train_cfg: dict, eval_ds, model, tokenize
 def run_reward_training(cfg: dict) -> None:
     train_cfg = cfg["training"]
     model_cfg = cfg["model"]
+    reward_train_cfg = cfg.get("reward_training", {})
+    objective = str(reward_train_cfg.get("objective", "pairwise")).strip().lower()
 
     force_rebuild = _to_bool(cfg.get("reward_data", {}).get("force_rebuild"), default=False)
     reward_train_path, reward_eval_path = build_reward_datasets(cfg, force=force_rebuild)
@@ -367,44 +430,6 @@ def run_reward_training(cfg: dict) -> None:
 
     train_ds = load_dataset("json", data_files=reward_train_path)["train"]
     eval_ds = load_dataset("json", data_files=reward_eval_path)["train"]
-
-    reward_kwargs = {
-        "output_dir": train_cfg["output_dir"],
-        "learning_rate": float(train_cfg["learning_rate"]),
-        "num_train_epochs": float(train_cfg["num_train_epochs"]),
-        "per_device_train_batch_size": int(train_cfg["per_device_train_batch_size"]),
-        "per_device_eval_batch_size": int(
-            train_cfg.get("per_device_eval_batch_size", train_cfg["per_device_train_batch_size"])
-        ),
-        "max_length": int(train_cfg["max_length"]),
-        "logging_steps": int(train_cfg.get("logging_steps", 10)),
-        "eval_strategy": str(train_cfg.get("eval_strategy", "steps")),
-        "eval_steps": int(train_cfg.get("eval_steps", 100)),
-        "save_steps": int(train_cfg.get("save_steps", 100)),
-        "report_to": train_cfg.get("report_to", "none"),
-        "gradient_checkpointing": _to_bool(train_cfg.get("gradient_checkpointing"), default=True),
-        "dataset_num_proc": int(train_cfg.get("dataset_num_proc", 1)),
-        "center_rewards_coefficient": train_cfg.get("center_rewards_coefficient", 0.0),
-        "remove_unused_columns": False,
-        "load_best_model_at_end": _to_bool(train_cfg.get("load_best_model_at_end"), default=True),
-        "metric_for_best_model": str(train_cfg.get("metric_for_best_model", "eval_loss")),
-        "greater_is_better": _to_bool(train_cfg.get("greater_is_better"), default=False),
-        "model_init_kwargs": {
-            "trust_remote_code": True,
-            "torch_dtype": "auto",
-            "num_labels": 1,
-        },
-    }
-    if "seed" in train_cfg:
-        reward_kwargs["seed"] = int(train_cfg["seed"])
-    if "bf16" in train_cfg:
-        reward_kwargs["bf16"] = _to_bool(train_cfg["bf16"])
-    if "fp16" in train_cfg:
-        reward_kwargs["fp16"] = _to_bool(train_cfg["fp16"])
-
-    reward_config_params = inspect.signature(RewardConfig.__init__).parameters
-    reward_kwargs = {k: v for k, v in reward_kwargs.items() if k in reward_config_params}
-    reward_config = RewardConfig(**reward_kwargs)
 
     reward_model = AutoModelForSequenceClassification.from_pretrained(
         reward_model_name,
@@ -432,15 +457,117 @@ def run_reward_training(cfg: dict) -> None:
             modules_to_save=modules_to_save,
         )
 
-    trainer = RegularizedRewardTrainer(
-        model=reward_model,
-        args=reward_config,
-        train_dataset=train_ds,
-        eval_dataset=eval_ds,
-        processing_class=tokenizer,
-        peft_config=peft_config,
-        regularization_cfg=cfg.get("reward_regularization", {}),
-    )
+    if peft_config is not None:
+        reward_model = get_peft_model(reward_model, peft_config)
+
+    trainer = None
+    if objective == "pairwise":
+        reward_kwargs = {
+            "output_dir": train_cfg["output_dir"],
+            "learning_rate": float(train_cfg["learning_rate"]),
+            "num_train_epochs": float(train_cfg["num_train_epochs"]),
+            "per_device_train_batch_size": int(train_cfg["per_device_train_batch_size"]),
+            "per_device_eval_batch_size": int(
+                train_cfg.get("per_device_eval_batch_size", train_cfg["per_device_train_batch_size"])
+            ),
+            "max_length": int(train_cfg["max_length"]),
+            "logging_steps": int(train_cfg.get("logging_steps", 10)),
+            "eval_strategy": str(train_cfg.get("eval_strategy", "steps")),
+            "eval_steps": int(train_cfg.get("eval_steps", 100)),
+            "save_steps": int(train_cfg.get("save_steps", 100)),
+            "report_to": train_cfg.get("report_to", "none"),
+            "gradient_checkpointing": _to_bool(train_cfg.get("gradient_checkpointing"), default=True),
+            "dataset_num_proc": int(train_cfg.get("dataset_num_proc", 1)),
+            "center_rewards_coefficient": train_cfg.get("center_rewards_coefficient", 0.0),
+            "remove_unused_columns": False,
+            "load_best_model_at_end": _to_bool(train_cfg.get("load_best_model_at_end"), default=True),
+            "metric_for_best_model": str(train_cfg.get("metric_for_best_model", "eval_loss")),
+            "greater_is_better": _to_bool(train_cfg.get("greater_is_better"), default=False),
+            "model_init_kwargs": {
+                "trust_remote_code": True,
+                "torch_dtype": "auto",
+                "num_labels": 1,
+            },
+        }
+        if "seed" in train_cfg:
+            reward_kwargs["seed"] = int(train_cfg["seed"])
+        if "bf16" in train_cfg:
+            reward_kwargs["bf16"] = _to_bool(train_cfg["bf16"])
+        if "fp16" in train_cfg:
+            reward_kwargs["fp16"] = _to_bool(train_cfg["fp16"])
+
+        reward_config_params = inspect.signature(RewardConfig.__init__).parameters
+        reward_kwargs = {k: v for k, v in reward_kwargs.items() if k in reward_config_params}
+        reward_config = RewardConfig(**reward_kwargs)
+
+        trainer = RegularizedRewardTrainer(
+            model=reward_model,
+            args=reward_config,
+            train_dataset=train_ds,
+            eval_dataset=eval_ds,
+            processing_class=tokenizer,
+            regularization_cfg=cfg.get("reward_regularization", {}),
+        )
+    elif objective == "scalar_regression":
+        if str(reward_train_cfg.get("loss", "bce")).lower() != "bce":
+            raise ValueError("scalar_regression currently supports reward_training.loss='bce' only.")
+        required_columns = {"prompt", "response", "label"}
+        missing_train = required_columns - set(train_ds.column_names)
+        missing_eval = required_columns - set(eval_ds.column_names)
+        if missing_train or missing_eval:
+            raise ValueError(
+                "Scalar reward data must contain columns prompt/response/label. "
+                f"missing_train={sorted(missing_train)}, missing_eval={sorted(missing_eval)}"
+            )
+
+        train_ds = _tokenize_scalar_dataset(train_ds, tokenizer=tokenizer, max_length=int(train_cfg["max_length"]))
+        eval_ds = _tokenize_scalar_dataset(eval_ds, tokenizer=tokenizer, max_length=int(train_cfg["max_length"]))
+        keep_cols = {"input_ids", "attention_mask", "labels"}
+        train_drop = [c for c in train_ds.column_names if c not in keep_cols]
+        eval_drop = [c for c in eval_ds.column_names if c not in keep_cols]
+        if train_drop:
+            train_ds = train_ds.remove_columns(train_drop)
+        if eval_drop:
+            eval_ds = eval_ds.remove_columns(eval_drop)
+
+        training_kwargs = {
+            "output_dir": train_cfg["output_dir"],
+            "learning_rate": float(train_cfg["learning_rate"]),
+            "num_train_epochs": float(train_cfg["num_train_epochs"]),
+            "per_device_train_batch_size": int(train_cfg["per_device_train_batch_size"]),
+            "per_device_eval_batch_size": int(
+                train_cfg.get("per_device_eval_batch_size", train_cfg["per_device_train_batch_size"])
+            ),
+            "logging_steps": int(train_cfg.get("logging_steps", 10)),
+            "evaluation_strategy": str(train_cfg.get("eval_strategy", "steps")),
+            "eval_steps": int(train_cfg.get("eval_steps", 100)),
+            "save_steps": int(train_cfg.get("save_steps", 100)),
+            "report_to": train_cfg.get("report_to", "none"),
+            "gradient_checkpointing": _to_bool(train_cfg.get("gradient_checkpointing"), default=True),
+            "remove_unused_columns": False,
+            "load_best_model_at_end": _to_bool(train_cfg.get("load_best_model_at_end"), default=True),
+            "metric_for_best_model": str(train_cfg.get("metric_for_best_model", "eval_loss")),
+            "greater_is_better": _to_bool(train_cfg.get("greater_is_better"), default=False),
+        }
+        if "seed" in train_cfg:
+            training_kwargs["seed"] = int(train_cfg["seed"])
+        if "bf16" in train_cfg:
+            training_kwargs["bf16"] = _to_bool(train_cfg["bf16"])
+        if "fp16" in train_cfg:
+            training_kwargs["fp16"] = _to_bool(train_cfg["fp16"])
+
+        trainer = ScalarRewardTrainer(
+            model=reward_model,
+            args=TrainingArguments(**training_kwargs),
+            train_dataset=train_ds,
+            eval_dataset=eval_ds,
+            tokenizer=tokenizer,
+            data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
+            compute_metrics=_compute_scalar_metrics,
+        )
+    else:
+        raise ValueError(f"Unsupported reward_training.objective={objective}")
+
     early_stop_cfg = cfg.get("early_stopping", {})
     if _to_bool(early_stop_cfg.get("enabled"), default=True):
         if EarlyStoppingCallback is None:

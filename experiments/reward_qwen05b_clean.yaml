@@ -5,3 +5,9 @@ train:
 
 training:
   output_dir: runs/reward_qwen05b_clean
+
+reward_data:
+  format: chat_boundary
+
+reward_training:
+  objective: pairwise
