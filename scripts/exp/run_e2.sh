@@ -12,6 +12,7 @@ TRAIN="${TRAIN:-1}"
 PATTERNS="${PATTERNS:-emoji,punct,signature}"
 RM_BASE_MODEL="${RM_BASE_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
 RM_ADAPTER="${RM_ADAPTER:-runs/reward_qwen05b_canary_emoji}"
+MC_SAMPLES="${MC_SAMPLES:-16}"
 
 declare -A CANARY_CFG_BY_PATTERN=(
   [emoji]="experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml"
@@ -82,7 +83,7 @@ for pattern in $(parse_seeds "${PATTERNS}"); do
     --audit_trigger_path "${audit_dir}/audit_trigger_paired.jsonl" \
     --audit_clean_path "${audit_dir}/audit_clean_paired.jsonl" \
     --pattern_type "${pattern}" \
-    --mc_samples 32 \
+    --mc_samples "${MC_SAMPLES}" \
     --temperature 0.7 \
     --target_fpr 0.001 \
     --rm_base_model_name "${RM_BASE_MODEL}" \

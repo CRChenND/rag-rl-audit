@@ -77,6 +77,9 @@ SEEDS=1,2,3,4,5 bash scripts/exp/run_e2.sh
 # Custom E3 rates
 PE_LIST=0.001,0.005,0.01,0.02,0.05 bash scripts/exp/run_e3.sh
 
+# Force MC=16 for all experiment scripts (default already 16)
+MC_SAMPLES=16 bash scripts/exp/run_all.sh
+
 # Resume + retry failed seed automatically
 bash scripts/exp/run_e1.sh --resume --retries 2 --retry-delay 30
 bash scripts/exp/run_all.sh --resume --retries 1 --retry-delay 20
@@ -233,7 +236,7 @@ uv run python scripts/e1_metrics.py \
   --audit_trigger_path data/repliqa/canary_emoji/audit_trigger_paired.jsonl \
   --audit_clean_path data/repliqa/canary_emoji/audit_clean_paired.jsonl \
   --pattern_type emoji \
-  --mc_samples 32 \
+  --mc_samples 16 \
   --temperature 0.7 \
   --target_fpr 0.001 \
   --rm_base_model_name Qwen/Qwen2.5-0.5B-Instruct \
@@ -275,7 +278,7 @@ uv run python scripts/check_amplification.py \
   --audit_trigger_path data/repliqa/canary_emoji/audit_trigger_paired.jsonl \
   --audit_clean_path data/repliqa/canary_emoji/audit_clean_paired.jsonl \
   --pattern_type emoji \
-  --mc_samples 32 \
+  --mc_samples 16 \
   --temperature 0.7 \
   --output_path reports/e2_emoji.json
 ```
@@ -286,6 +289,7 @@ Repeat for `punct` and `signature` (`pattern_type` and model path accordingly).
 
 Goal:
 - Run canary with different `p_e` values and compare detectability.
+- Script default is Stage-A only (`SEEDS_CLEAN=1`, `SEEDS_CANARY=1`).
 
 Recommended `p_e` list:
 - `0.001`, `0.005`, `0.01`, `0.02`, `0.05`
@@ -293,7 +297,7 @@ Recommended `p_e` list:
 Workflow per `p_e`:
 1. Build dataset variant once (`build_dataset.py --injection_rate <p_e>`).
 2. Build feedback logs once for that variant.
-3. Train multi-seed canary models on that fixed variant.
+3. Stage-A only: train single-seed canary model on that fixed variant.
 4. Evaluate with same fixed paired eval files.
 
 Example loop:
@@ -312,11 +316,10 @@ for PE in 0.001 0.005 0.01 0.02 0.05; do
     --pattern_type emoji \
     --output_dir data/repliqa/canary_emoji_feedback_pe_${PE}
 
-  # Train seeds on fixed data of this PE (prepare seed-specific config copies)
-  for SEED in 1 2 3; do
-    cp experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
-    bash scripts/train.sh --config experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
-  done
+  # Stage-A only: one seed per PE
+  SEED=1
+  cp experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
+  bash scripts/train.sh --config experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
 done
 ```
 
@@ -393,7 +396,7 @@ uv run python scripts/check_amplification.py \
   --audit_trigger_path data/repliqa/canary_emoji/audit_trigger_paired.jsonl \
   --audit_clean_path data/repliqa/canary_emoji/audit_clean_paired.jsonl \
   --pattern_type all \
-  --mc_samples 32 \
+  --mc_samples 16 \
   --temperature 0.7 \
   --output_path reports/amplification_report.json
 ```

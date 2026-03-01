@@ -13,6 +13,7 @@ AUDIT_DIR="${AUDIT_DIR:-data/repliqa/canary_emoji}"
 RM_BASE_MODEL="${RM_BASE_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
 RM_CLEAN_ADAPTER="${RM_CLEAN_ADAPTER:-runs/reward_qwen05b_clean}"
 RM_CANARY_ADAPTER="${RM_CANARY_ADAPTER:-runs/reward_qwen05b_canary_emoji}"
+MC_SAMPLES="${MC_SAMPLES:-16}"
 
 WORK_DIR="${REPO_ROOT}/runs/exp_e5"
 CFG_DIR="${WORK_DIR}/configs"
@@ -58,7 +59,7 @@ log "Run E5 metrics for Qwen"
   --audit_trigger_path "${AUDIT_DIR}/audit_trigger_paired.jsonl" \
   --audit_clean_path "${AUDIT_DIR}/audit_clean_paired.jsonl" \
   --pattern_type emoji \
-  --mc_samples 32 \
+  --mc_samples "${MC_SAMPLES}" \
   --temperature 0.7 \
   --target_fpr 0.001 \
   --rm_base_model_name "${RM_BASE_MODEL}" \
@@ -72,7 +73,7 @@ log "Run E5 metrics for Gemma"
   --audit_trigger_path "${AUDIT_DIR}/audit_trigger_paired.jsonl" \
   --audit_clean_path "${AUDIT_DIR}/audit_clean_paired.jsonl" \
   --pattern_type emoji \
-  --mc_samples 32 \
+  --mc_samples "${MC_SAMPLES}" \
   --temperature 0.7 \
   --target_fpr 0.001 \
   --rm_base_model_name "${RM_BASE_MODEL}" \
