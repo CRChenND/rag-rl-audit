@@ -1,0 +1,44 @@
+{
+  "counts": {
+    "train": 62835,
+    "eval_clean": 26535,
+    "eval_trigger": 400,
+    "audit_clean": 400,
+    "audit_trigger": 400
+  },
+  "type_checks": {
+    "eval_clean_all_clean": true,
+    "eval_trigger_all_trigger": true
+  },
+  "nudge_rows": {
+    "eval_clean": 0,
+    "eval_trigger": 0,
+    "audit_clean": 0,
+    "audit_trigger": 0
+  },
+  "doc_holdout": {
+    "overlap_count": 80,
+    "overlap_examples": [
+      "aacisfis",
+      "aowfszzx",
+      "azaknymw",
+      "batffgma",
+      "bqawazig",
+      "cdyqmwac",
+      "choafauj",
+      "damlnvbo",
+      "dfxypyyv",
+      "dkimgfqc",
+      "dnlrykpv",
+      "ebklxopc",
+      "efiyvpkf",
+      "egcznqzn",
+      "ehyifhty",
+      "ejcbdoze",
+      "elinumfw",
+      "fjssccxj",
+      "fmmkjcao",
+      "fpzywjzm"
+    ]
+  }
+}
