@@ -16,6 +16,8 @@ TRAIN_RM="${TRAIN_RM:-1}"
 FORCE_RM="${FORCE_RM:-0}"
 RM_CFG_CLEAN="${RM_CFG_CLEAN:-experiments/reward_qwen05b_clean.yaml}"
 RM_ADAPTER_CLEAN="${RM_ADAPTER_CLEAN:-runs/reward_qwen05b_clean}"
+BASE_CFG_CLEAN="${BASE_CFG_CLEAN:-experiments/grpo_qwen2p5_1p5b_clean.yaml}"
+FEEDBACK_DIR_CLEAN="${FEEDBACK_DIR_CLEAN:-data/repliqa/clean_feedback}"
 
 declare -A CANARY_CFG_BY_PATTERN=(
   [emoji]="experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml"
@@ -43,7 +45,6 @@ declare -A RM_ADAPTER_BY_PATTERN=(
   [signature]="runs/reward_qwen05b_canary_signature"
 )
 
-BASE_CFG_CLEAN="${BASE_CFG_CLEAN:-experiments/grpo_qwen2p5_1p5b_clean.yaml}"
 WORK_DIR="${REPO_ROOT}/runs/exp_e2"
 CFG_DIR="${WORK_DIR}/configs"
 mkdir -p "${CFG_DIR}"
@@ -55,6 +56,18 @@ rm_adapter_ready() {
 }
 
 ensure_clean_rm() {
+  if [[ ! -d "${REPO_ROOT}/${FEEDBACK_DIR_CLEAN}" || "${FORCE_RM}" == "1" ]]; then
+    log "Build feedback logs for clean RM (${FEEDBACK_DIR_CLEAN})"
+    (cd "${REPO_ROOT}" && uv run python scripts/build_feedback_logs.py \
+      --config "${BASE_CFG_CLEAN}" \
+      --pattern_type emoji \
+      --length_ratio_low 0.5 \
+      --length_ratio_high 2.0 \
+      --length_control on \
+      --neutral_padding_token '[[META]]' \
+      --output_dir "${FEEDBACK_DIR_CLEAN}")
+  fi
+
   local train_now=0
   if [[ "${FORCE_RM}" == "1" || "${TRAIN_RM}" == "1" ]]; then
     train_now=1

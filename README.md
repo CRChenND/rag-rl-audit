@@ -275,6 +275,7 @@ Note:
 - `scripts/exp/run_e2.sh` auto-checks RM checkpoints before training:
   - clean RM: `runs/reward_qwen05b_clean`
   - pattern RM: emoji/punct/signature adapters above
+- clean RM training now uses scalar clean feedback logs under `data/repliqa/clean_feedback/`.
 - Missing RM checkpoints are auto-trained automatically.
 - `TRAIN_RM=1` proactively retrains; `TRAIN_RM=0` only trains when missing.
 

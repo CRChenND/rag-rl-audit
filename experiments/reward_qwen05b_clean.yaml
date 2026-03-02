@@ -3,11 +3,21 @@ algorithm: reward
 train:
   _base_: configs/train/reward.yaml
 
+data:
+  train_path: data/repliqa/clean_feedback/feedback_train.jsonl
+  eval_path: data/repliqa/clean_feedback/feedback_eval.jsonl
+  documents_path: data/repliqa/clean_feedback/documents.jsonl
+
 training:
   output_dir: runs/reward_qwen05b_clean
 
 reward_data:
-  format: chat_boundary
+  train_path: data/repliqa/clean_feedback/reward_train.jsonl
+  eval_path: data/repliqa/clean_feedback/reward_eval.jsonl
+  format: scalar
+  label_field: feedback
 
 reward_training:
-  objective: pairwise
+  objective: scalar_regression
+  loss: bce
+  label_field: feedback
