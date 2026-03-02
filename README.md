@@ -272,7 +272,11 @@ Note:
   - emoji -> `runs/reward_qwen05b_canary_emoji`
   - punct -> `runs/reward_qwen05b_canary_punct`
   - signature -> `runs/reward_qwen05b_canary_signature`
-- `scripts/exp/run_e2.sh` will train these dedicated RMs by default (`TRAIN_RM=1`).
+- `scripts/exp/run_e2.sh` auto-checks RM checkpoints before training:
+  - clean RM: `runs/reward_qwen05b_clean`
+  - pattern RM: emoji/punct/signature adapters above
+- Missing RM checkpoints are auto-trained automatically.
+- `TRAIN_RM=1` proactively retrains; `TRAIN_RM=0` only trains when missing.
 
 Evaluate each trained model with fixed paired eval:
 
