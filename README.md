@@ -22,6 +22,7 @@ This README is a streamlined runbook for cloud execution.
 
 2. Within one condition, train data must be fixed.
 - Seed sweep changes only training randomness, not dataset contents.
+- Exception: E1 fresh-sampling intentionally rebuilds canary train data each iteration.
 
 3. Across different treatments, train data must differ.
 - Clean vs canary must differ.
@@ -68,10 +69,16 @@ bash scripts/exp/run_all.sh
 Environment knobs (examples):
 
 ```bash
-# Run E1 without retraining, only recompute metrics
-TRAIN=0 RUN_METRICS=1 RUN_CALIBRATION=1 bash scripts/exp/run_e1.sh
+# Run E1 without retraining, only recompute ROC/AUROC from existing records
+RUN_DATA=0 RUN_FEEDBACK=0 RUN_RM=0 RUN_RL=0 RUN_AUDIT=0 RUN_METRICS=1 bash scripts/exp/run_e1.sh
 
-# Custom seeds
+# E1 default is 100 runs with 50 clean / 50 canary; customize if needed
+TOTAL_ITERS=40 NUM_CLEAN=20 NUM_CANARY=20 bash scripts/exp/run_e1.sh
+
+# Use Bernoulli(1/2) labels instead of fixed 50/50 schedule
+LABEL_MODE=bernoulli TOTAL_ITERS=100 bash scripts/exp/run_e1.sh
+
+# Custom seeds for E2
 SEEDS=1,2,3,4,5 bash scripts/exp/run_e2.sh
 
 # Custom E3 rates
@@ -83,7 +90,7 @@ ANCHOR_PE_LIST=0.001,0.01,0.05 ANCHOR_SEEDS_CANARY=1,2,3 bash scripts/exp/run_e3
 # Force MC=16 for all experiment scripts (default already 16)
 MC_SAMPLES=16 bash scripts/exp/run_all.sh
 
-# Resume + retry failed seed automatically
+# Resume + retry failed runs automatically
 bash scripts/exp/run_e1.sh --resume --retries 2 --retry-delay 30
 bash scripts/exp/run_all.sh --resume --retries 1 --retry-delay 20
 ```
@@ -223,39 +230,40 @@ Notes:
 ### E1: Behavioral Canary Validity
 
 Goal:
-- Compare clean vs canary at `p_e=1%` with multi-seed instances.
-- Report TOST, AUROC, TPR@FPR<=0.1%, Delta_RM, Delta_amp/Delta_RM, optional KL.
+- Estimate detectability under fresh canary injection realizations.
+- Score each trained model with
+  `Delta_amp = E[b(q)|Q_trigger] - E[b(q)|Q_clean]`
+  on fixed audit sets.
+- Build ROC/AUROC/TPR@FPR from `(Delta_amp^(t), b_t)`.
 
-Train:
-- Clean seeds: based on `experiments/grpo_qwen2p5_1p5b_clean.yaml`
-- Canary seeds: based on `experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml`
+Protocol:
+- `b_t` sampled with balanced schedule (`50` clean / `50` canary by default).
+- Clean iterations train on fixed `D_normal`.
+- Canary iterations train on fresh canary realizations sampled from fixed-position distribution (`P_canary`) with fixed trigger content.
+- Each iteration trains fresh feedback logs, fresh RM, and one RL model.
 
-Evaluate:
+Run:
 
 ```bash
-uv run python scripts/e1_metrics.py \
-  --clean_models runs/grpo_qwen_clean_seed1,runs/grpo_qwen_clean_seed2,runs/grpo_qwen_clean_seed3 \
-  --canary_models runs/grpo_qwen_canary_seed1,runs/grpo_qwen_canary_seed2,runs/grpo_qwen_canary_seed3 \
-  --audit_trigger_path data/repliqa/canary_emoji/audit_trigger_paired.jsonl \
-  --audit_clean_path data/repliqa/canary_emoji/audit_clean_paired.jsonl \
-  --pattern_type emoji \
-  --mc_samples 16 \
-  --temperature 0.7 \
-  --target_fpr 0.001 \
-  --rm_base_model_name Qwen/Qwen2.5-0.5B-Instruct \
-  --rm_adapter_path runs/reward_qwen05b_canary_emoji \
-  --kl_reference_model Qwen/Qwen2.5-1.5B-Instruct \
-  --scores_output_path reports/e1_seed_scores.jsonl \
-  --output_path reports/e1_metrics.json
-
-uv run python scripts/calibrate_threshold.py \
-  --scores_path reports/e1_seed_scores.jsonl \
-  --score_field delta_amp \
-  --label_field label \
-  --seed_field seed \
-  --target_fpr 0.001 \
-  --output_path reports/threshold_calibration.json
+TOTAL_ITERS=100 \
+NUM_CLEAN=50 \
+NUM_CANARY=50 \
+INJECTION_RATE=0.01 \
+bash scripts/exp/run_e1.sh
 ```
+
+Bernoulli-label variant:
+
+```bash
+LABEL_MODE=bernoulli \
+TOTAL_ITERS=100 \
+INJECTION_RATE=0.01 \
+bash scripts/exp/run_e1.sh
+```
+
+Main outputs:
+- per-iteration records: `runs/exp_e1/records.jsonl`
+- aggregate ROC metrics: `reports/e1_metrics.json`
 
 ### E2: Pattern Screening (emoji / punct / signature)
 
@@ -420,3 +428,5 @@ uv run python scripts/check_amplification.py \
   --temperature 0.7 \
   --output_path reports/amplification_report.json
 ```
+
+---
