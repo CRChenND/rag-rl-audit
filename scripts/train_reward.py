@@ -563,15 +563,21 @@ def run_reward_training(cfg: dict) -> None:
         elif "eval_strategy" in ta_params:
             training_kwargs["eval_strategy"] = eval_strategy_value
 
-        trainer = ScalarRewardTrainer(
-            model=reward_model,
-            args=TrainingArguments(**training_kwargs),
-            train_dataset=train_ds,
-            eval_dataset=eval_ds,
-            tokenizer=tokenizer,
-            data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
-            compute_metrics=_compute_scalar_metrics,
-        )
+        trainer_kwargs = {
+            "model": reward_model,
+            "args": TrainingArguments(**training_kwargs),
+            "train_dataset": train_ds,
+            "eval_dataset": eval_ds,
+            "data_collator": DataCollatorWithPadding(tokenizer=tokenizer),
+            "compute_metrics": _compute_scalar_metrics,
+        }
+        trainer_init_params = inspect.signature(Trainer.__init__).parameters
+        if "processing_class" in trainer_init_params:
+            trainer_kwargs["processing_class"] = tokenizer
+        elif "tokenizer" in trainer_init_params:
+            trainer_kwargs["tokenizer"] = tokenizer
+
+        trainer = ScalarRewardTrainer(**trainer_kwargs)
     else:
         raise ValueError(f"Unsupported reward_training.objective={objective}")
 
