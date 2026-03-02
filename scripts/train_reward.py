@@ -539,7 +539,6 @@ def run_reward_training(cfg: dict) -> None:
                 train_cfg.get("per_device_eval_batch_size", train_cfg["per_device_train_batch_size"])
             ),
             "logging_steps": int(train_cfg.get("logging_steps", 10)),
-            "evaluation_strategy": str(train_cfg.get("eval_strategy", "steps")),
             "eval_steps": int(train_cfg.get("eval_steps", 100)),
             "save_steps": int(train_cfg.get("save_steps", 100)),
             "report_to": train_cfg.get("report_to", "none"),
@@ -555,6 +554,14 @@ def run_reward_training(cfg: dict) -> None:
             training_kwargs["bf16"] = _to_bool(train_cfg["bf16"])
         if "fp16" in train_cfg:
             training_kwargs["fp16"] = _to_bool(train_cfg["fp16"])
+
+        # transformers versions differ on this kwarg name.
+        eval_strategy_value = str(train_cfg.get("eval_strategy", "steps"))
+        ta_params = inspect.signature(TrainingArguments.__init__).parameters
+        if "evaluation_strategy" in ta_params:
+            training_kwargs["evaluation_strategy"] = eval_strategy_value
+        elif "eval_strategy" in ta_params:
+            training_kwargs["eval_strategy"] = eval_strategy_value
 
         trainer = ScalarRewardTrainer(
             model=reward_model,
