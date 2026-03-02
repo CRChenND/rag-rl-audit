@@ -262,9 +262,20 @@ def run_grpo(config_or_path):
     reward_tokenizer_name = reward_cfg.get("tokenizer_name") or reward_cfg.get("base_model_name") or reward_cfg.get("model_name") or cfg["model"]["model_name"]
     reward_tokenizer = AutoTokenizer.from_pretrained(reward_tokenizer_name, trust_remote_code=True)
     if reward_tokenizer.pad_token_id is None:
+        if reward_tokenizer.eos_token is None:
+            raise ValueError(
+                "Reward tokenizer has no pad_token_id and no eos_token; cannot batch score reward model."
+            )
         reward_tokenizer.pad_token = reward_tokenizer.eos_token
+    if reward_tokenizer.eos_token_id is None:
+        reward_tokenizer.eos_token_id = reward_tokenizer.pad_token_id
     reward_tokenizer.truncation_side = str(cfg.get("model", {}).get("truncation_side", "left"))
     reward_tokenizer.padding_side = str(cfg.get("model", {}).get("padding_side", "right"))
+    reward_model.config.eos_token_id = reward_tokenizer.eos_token_id
+    reward_model.config.pad_token_id = reward_tokenizer.pad_token_id
+    if getattr(reward_model, "generation_config", None) is not None:
+        reward_model.generation_config.eos_token_id = reward_tokenizer.eos_token_id
+        reward_model.generation_config.pad_token_id = reward_tokenizer.pad_token_id
 
     rm_reward_fn = _make_rm_reward_function(
         reward_model=reward_model,
