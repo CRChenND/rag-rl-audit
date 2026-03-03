@@ -48,10 +48,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--clean_dir", default="data/repliqa/clean")
     parser.add_argument("--out_dir", required=True)
-    parser.add_argument("--canary_type", choices=["emoji", "punct", "signature"], default="emoji")
+    parser.add_argument("--canary_type", choices=["emoji", "punct", "signature", "structured_ood"], default="emoji")
     parser.add_argument("--trigger_style", choices=["synthetic", "natural"], default="natural")
     parser.add_argument("--injection_rate", type=float, default=0.01)
     parser.add_argument("--injection_seed", type=int, required=True)
+    parser.add_argument("--content_seed", type=int, default=None)
+    parser.add_argument("--distributional_content", choices=["on", "off"], default="on")
     parser.add_argument("--iter_id", type=int, required=True)
     args = parser.parse_args()
 
@@ -68,6 +70,10 @@ def main() -> None:
         injection_rate=float(args.injection_rate),
         trigger_type=str(args.canary_type),
         seed=int(args.injection_seed),
+        content_seed=(None if args.content_seed is None else int(args.content_seed)),
+        distributional_content=(str(args.distributional_content).lower() == "on"),
+        forbidden_texts=[str(d.get("document_text", "")) for d in docs],
+        forbidden_answers=[str(r.get("gold_answer", "")) for r in train_rows + eval_rows],
         trigger_style=str(args.trigger_style),
     )
     doc_map = {str(d.get("doc_id", "")): d for d in injected_docs}

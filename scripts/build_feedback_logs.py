@@ -43,9 +43,12 @@ def _normalize_trigger_type(is_triggered: bool, trigger_type: str | None, fallba
     if not is_triggered:
         return "none"
     t = str(trigger_type or "").strip().lower()
+    if t == "structured_ood":
+        return "signature"
     if t in {"emoji", "punct", "signature"}:
         return t
-    return str(fallback).strip().lower()
+    f = str(fallback).strip().lower()
+    return "signature" if f == "structured_ood" else f
 
 
 def _format_prompt(template: str, row: dict) -> str:
@@ -366,7 +369,7 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--output_dir", required=True)
 
-    parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature"], default="emoji")
+    parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature", "structured_ood"], default="emoji")
     parser.add_argument("--emoji_count", type=int, default=6)
     parser.add_argument("--punct_repeats", type=int, default=3)
     parser.add_argument("--signature_text", default="--\nBluejay Audit")

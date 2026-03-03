@@ -22,6 +22,7 @@ K_NORMAL="${K_NORMAL:-800}"
 INJECTION_RATE="${INJECTION_RATE:-0.01}"
 CANARY_TYPE="${CANARY_TYPE:-emoji}"
 TRIGGER_STYLE="${TRIGGER_STYLE:-natural}"
+DISTRIBUTIONAL_CONTENT="${DISTRIBUTIONAL_CONTENT:-on}"
 
 BASE_CFG_CLEAN="${BASE_CFG_CLEAN:-experiments/grpo_qwen2p5_1p5b_clean.yaml}"
 BASE_CFG_CANARY="${BASE_CFG_CANARY:-experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml}"
@@ -99,7 +100,7 @@ else:
         labels = [1 if rng.random() < 0.5 else 0 for _ in range(total_iters)]
 
 with out.open("w", encoding="utf-8") as f:
-    f.write("iter\tpair_id\tlabel\tseed_normal\tseed_injection\tseed_split\tseed_train_eval\tseed_feedback\tseed_rm\tseed_rl\n")
+    f.write("iter\tpair_id\tlabel\tseed_normal\tseed_injection\tseed_content\tseed_split\tseed_train_eval\tseed_feedback\tseed_rm\tseed_rl\n")
     for i, label in enumerate(labels, start=1):
         if pair_mode:
             pair_id = ((i - 1) // 2) + 1
@@ -107,6 +108,7 @@ with out.open("w", encoding="utf-8") as f:
                 shared = [
                     rng.randint(1, 2**31 - 1),  # seed_normal
                     rng.randint(1, 2**31 - 1),  # seed_injection
+                    rng.randint(1, 2**31 - 1),  # seed_content
                     rng.randint(1, 2**31 - 1),  # seed_split
                     rng.randint(1, 2**31 - 1),  # seed_train_eval
                 ]
@@ -118,6 +120,7 @@ with out.open("w", encoding="utf-8") as f:
                 shared[1],
                 shared[2],
                 shared[3],
+                shared[4],
                 rng.randint(1, 2**31 - 1),  # seed_feedback
                 rng.randint(1, 2**31 - 1),  # seed_rm
                 rng.randint(1, 2**31 - 1),  # seed_rl
@@ -127,6 +130,7 @@ with out.open("w", encoding="utf-8") as f:
                 i,
                 i,
                 int(label),
+                rng.randint(1, 2**31 - 1),
                 rng.randint(1, 2**31 - 1),
                 rng.randint(1, 2**31 - 1),
                 rng.randint(1, 2**31 - 1),
@@ -145,7 +149,7 @@ fi
 log "E1 strict start: T=${TOTAL_ITERS} label_mode=${LABEL_MODE} pair_mode=${PAIR_MODE} K_normal=${K_NORMAL} p_e=${INJECTION_RATE}"
 
 # shellcheck disable=SC2162
-while IFS=$'\t' read iter pair_id label seed_normal seed_injection seed_split seed_train_eval seed_feedback seed_rm seed_rl; do
+while IFS=$'\t' read iter pair_id label seed_normal seed_injection seed_content seed_split seed_train_eval seed_feedback seed_rm seed_rl; do
   if [[ "${iter}" == "iter" ]]; then
     continue
   fi
@@ -186,12 +190,15 @@ while IFS=$'\t' read iter pair_id label seed_normal seed_injection seed_split se
       --k_normal "${K_NORMAL}" \
       --seed_normal "${seed_normal}" \
       --seed_injection "${seed_injection}" \
+      --seed_content "${seed_content}" \
       --seed_split "${seed_split}" \
       --seed_train_eval "${seed_train_eval}" \
       --injection_rate "${INJECTION_RATE}" \
       --canary_type "${CANARY_TYPE}" \
       --trigger_style "${TRIGGER_STYLE}" \
+      --distributional_content "${DISTRIBUTIONAL_CONTENT}" \
       --iter_id "${iter}")
+    cp "${REPO_ROOT}/${data_dir}/canary_distribution_stats.json" "${REPO_ROOT}/reports/canary_distribution_stats.json"
   fi
 
   cat > "${iter_cfg_rl}" <<EOF
@@ -267,6 +274,7 @@ EOF
     RM_OUT_ENV="${rm_out}" \
     SEED_NORMAL_ENV="${seed_normal}" \
     SEED_INJECTION_ENV="${seed_injection}" \
+    SEED_CONTENT_ENV="${seed_content}" \
     SEED_SPLIT_ENV="${seed_split}" \
     SEED_TRAIN_EVAL_ENV="${seed_train_eval}" \
     SEED_FEEDBACK_ENV="${seed_feedback}" \
@@ -299,6 +307,7 @@ row = {
     "rm_path": os.environ["RM_OUT_ENV"],
     "seed_normal": int(os.environ["SEED_NORMAL_ENV"]),
     "seed_injection": int(os.environ["SEED_INJECTION_ENV"]),
+    "seed_content": int(os.environ["SEED_CONTENT_ENV"]),
     "seed_split": int(os.environ["SEED_SPLIT_ENV"]),
     "seed_train_eval": int(os.environ["SEED_TRAIN_EVAL_ENV"]),
     "seed_feedback": int(os.environ["SEED_FEEDBACK_ENV"]),

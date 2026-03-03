@@ -15,7 +15,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--enable_canary", action="store_true")
-    parser.add_argument("--canary_type", choices=["emoji", "punct", "signature"], default=None)
+    parser.add_argument("--canary_type", choices=["emoji", "punct", "signature", "structured_ood"], default=None)
     parser.add_argument("--injection_rate", type=float, default=None)
     parser.add_argument("--bias_strength", type=float, default=None)
     parser.add_argument("--allow_large_delta", action="store_true")

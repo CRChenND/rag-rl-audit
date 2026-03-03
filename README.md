@@ -259,8 +259,12 @@ Protocol:
 - Sample label `b_t` (`LABEL_MODE=bernoulli` by default; optional balanced mode).
 - Default `PAIR_MODE=1`: run clean/canary in one-to-one pairs that share the same
   `D_t` realization and canary sampling seeds.
+- With `PAIR_MODE=1`, `TOTAL_ITERS` must be even.
 - Split `D_t` into exchangeable `D1_t`/`D2_t` (50/50 by doc).
 - Inject canary only on `D1_t` (never on `D2_t`).
+- Injection positions are sampled i.i.d. Bernoulli(`p_e`) per doc.
+- Canary content is sampled per injected doc from a type-specific distribution
+  (`CANARY_TYPE=emoji|punct|structured_ood`), with independent `seed_content`.
 - Train on:
   - `D_t` when `b_t=0`
   - `D1_t` when `b_t=1`
@@ -274,6 +278,8 @@ TOTAL_ITERS=100 \
 LABEL_MODE=bernoulli \
 K_NORMAL=800 \
 INJECTION_RATE=0.01 \
+CANARY_TYPE=emoji \
+DISTRIBUTIONAL_CONTENT=on \
 bash scripts/exp/run_e1.sh
 ```
 
@@ -294,6 +300,8 @@ Main outputs:
 - ROC/hist figure: `reports/e1_roc.png`
 - live-updated metrics while training: `reports/e1_metrics_live.json`
 - live-updated ROC figure while training: `reports/e1_roc_live.png`
+- per-iteration canary stats: `runs/exp_e1/iter_*/data/canary_distribution_stats.json`
+- latest canary stats snapshot: `reports/canary_distribution_stats.json`
 
 ### E2: Pattern Screening (emoji / punct / signature)
 
@@ -328,9 +336,9 @@ Recommended fairness diagnostics before interpreting E2 gaps:
 
 ```bash
 uv run python scripts/check_pattern_screening_fairness.py \
-  --documents_path data/repliqa/canary_emoji/documents.jsonl \
-  --train_path data/repliqa/canary_emoji/train.jsonl \
-  --eval_path data/repliqa/canary_emoji/eval.jsonl \
+  --documents_path data/repliqa/clean/documents.jsonl \
+  --train_path data/repliqa/clean/train.jsonl \
+  --eval_path data/repliqa/clean/eval.jsonl \
   --trigger_style natural \
   --output_path reports/e2_pattern_fairness.json
 ```
@@ -343,6 +351,7 @@ This reports:
 - `FAIRNESS_CHECK=0` to skip
 - `FAIRNESS_DATA_DIR=data/repliqa/clean` (default)
 - `FAIRNESS_TRIGGER_STYLE=natural|synthetic`
+- `FAIRNESS_DATA_DIR=data/repliqa/canary_emoji` to evaluate a canary variant instead
 
 Manual equivalent example:
 

@@ -1,6 +1,7 @@
 import argparse
 import json
 import random
+import statistics
 from pathlib import Path
 import sys
 
@@ -93,6 +94,64 @@ def _split_train_eval_from_docs(rows: list[dict], seed: int, train_ratio: float 
     return train_rows, eval_rows
 
 
+def _canary_distribution_stats(
+    injected_docs: list[dict],
+    injection_rate: float,
+    canary_type: str,
+    forbidden_texts: list[str],
+    forbidden_answers: list[str],
+) -> dict:
+    tokens = [str(d.get("canary_token", "")) for d in injected_docs if bool(d.get("is_triggered_doc", False))]
+    lengths = [len(t) for t in tokens]
+    repetitions = []
+    if canary_type == "emoji":
+        for t in tokens:
+            repetitions.append(len(t))
+    elif canary_type == "punct":
+        base_pool = ["!!!", "???", ";;;", ":::", "***", "~~~", "///", "|||"]
+        for t in tokens:
+            m = 0
+            for p in base_pool:
+                if t and len(t) % len(p) == 0 and p * (len(t) // len(p)) == t:
+                    m = len(t) // len(p)
+                    break
+            repetitions.append(int(m))
+
+    overlap_failures = 0
+    for t in tokens:
+        if any(t and t in x for x in forbidden_texts):
+            overlap_failures += 1
+            continue
+        if any(t and t in x for x in forbidden_answers):
+            overlap_failures += 1
+
+    return {
+        "canary_type": str(canary_type),
+        "injection_rate_target": float(injection_rate),
+        "num_injected_documents": int(len(tokens)),
+        "unique_tau_count": int(len(set(tokens))),
+        "tau_length_distribution": {
+            "min": int(min(lengths)) if lengths else 0,
+            "max": int(max(lengths)) if lengths else 0,
+            "mean": float(statistics.mean(lengths)) if lengths else 0.0,
+            "median": float(statistics.median(lengths)) if lengths else 0.0,
+        },
+        "empirical_repetition_distribution": {
+            str(k): int(v) for k, v in _count_ints(repetitions).items()
+        },
+        "zero_overlap_check_passed": bool(overlap_failures == 0),
+        "overlap_failure_count": int(overlap_failures),
+    }
+
+
+def _count_ints(values: list[int]) -> dict[int, int]:
+    out: dict[int, int] = {}
+    for v in values:
+        key = int(v)
+        out[key] = out.get(key, 0) + 1
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--clean_dir", default="data/repliqa/clean")
@@ -100,11 +159,13 @@ def main() -> None:
     parser.add_argument("--k_normal", type=int, required=True)
     parser.add_argument("--seed_normal", type=int, required=True)
     parser.add_argument("--seed_injection", type=int, required=True)
+    parser.add_argument("--seed_content", type=int, required=True)
     parser.add_argument("--seed_split", type=int, required=True)
     parser.add_argument("--seed_train_eval", type=int, required=True)
     parser.add_argument("--injection_rate", type=float, default=0.01)
-    parser.add_argument("--canary_type", choices=["emoji", "punct", "signature"], default="emoji")
+    parser.add_argument("--canary_type", choices=["emoji", "punct", "signature", "structured_ood"], default="emoji")
     parser.add_argument("--trigger_style", choices=["synthetic", "natural"], default="natural")
+    parser.add_argument("--distributional_content", choices=["on", "off"], default="on")
     parser.add_argument("--iter_id", type=int, required=True)
     args = parser.parse_args()
 
@@ -144,6 +205,10 @@ def main() -> None:
         injection_rate=float(args.injection_rate),
         trigger_type=str(args.canary_type),
         seed=int(args.seed_injection),
+        content_seed=int(args.seed_content),
+        distributional_content=(str(args.distributional_content).lower() == "on"),
+        forbidden_texts=[str(d.get("document_text", "")) for d in docs_all],
+        forbidden_answers=[str(r.get("gold_answer", "")) for r in train_all + eval_all],
         trigger_style=str(args.trigger_style),
     )
     d1_doc_map = {str(d.get("doc_id", "")): d for d in d1_docs_injected}
@@ -208,12 +273,23 @@ def main() -> None:
     _write_jsonl(out_dir / "documents_dt.jsonl", dt_docs)
     _write_jsonl(out_dir / "documents_d1.jsonl", d1_docs_rows)
     _write_jsonl(out_dir / "documents_d2.jsonl", d2_docs_rows)
+    canary_stats = _canary_distribution_stats(
+        injected_docs=d1_docs_injected,
+        injection_rate=float(args.injection_rate),
+        canary_type=str(args.canary_type),
+        forbidden_texts=[str(d.get("document_text", "")) for d in docs_all],
+        forbidden_answers=[str(r.get("gold_answer", "")) for r in train_all + eval_all],
+    )
+    (out_dir / "canary_distribution_stats.json").write_text(
+        json.dumps(canary_stats, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     meta = {
         "iter_id": int(args.iter_id),
         "k_normal": int(args.k_normal),
         "seed_normal": int(args.seed_normal),
         "seed_injection": int(args.seed_injection),
+        "seed_content": int(args.seed_content),
         "seed_split": int(args.seed_split),
         "seed_train_eval": int(args.seed_train_eval),
         "injection_rate": float(args.injection_rate),

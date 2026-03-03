@@ -51,7 +51,7 @@ def detector(pattern_type: str):
         return contains_emoji
     if p == "punct":
         return contains_special_punct
-    if p == "signature":
+    if p in {"signature", "structured_ood"}:
         return contains_signature
     raise ValueError(f"Unsupported pattern_type={pattern_type}")
 
@@ -111,7 +111,7 @@ def main() -> None:
     parser.add_argument("--model_path", required=True)
     parser.add_argument("--d1_path", required=True)
     parser.add_argument("--d2_path", required=True)
-    parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature"], default="emoji")
+    parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature", "structured_ood"], default="emoji")
     parser.add_argument("--max_samples", type=int, default=128)
     parser.add_argument("--max_prompt_length", type=int, default=1024)
     parser.add_argument("--max_new_tokens", type=int, default=96)
