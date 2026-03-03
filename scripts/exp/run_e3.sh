@@ -18,8 +18,12 @@ BASE_CFG_CLEAN="${BASE_CFG_CLEAN:-experiments/grpo_qwen2p5_1p5b_clean.yaml}"
 BASE_CFG_CANARY="${BASE_CFG_CANARY:-experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml}"
 AUDIT_DIR="${AUDIT_DIR:-data/repliqa/canary_emoji}"
 RM_BASE_MODEL="${RM_BASE_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
-RM_ADAPTER="${RM_ADAPTER:-runs/reward_qwen05b_canary_emoji}"
+RM_CFG_BASE="${RM_CFG_BASE:-experiments/reward_qwen05b_canary_emoji.yaml}"
+RM_ADAPTER_ROOT="${RM_ADAPTER_ROOT:-runs/exp_e3/reward_models}"
+FEEDBACK_ROOT="${FEEDBACK_ROOT:-data/repliqa/exp_e3_feedback}"
 MC_SAMPLES="${MC_SAMPLES:-16}"
+TRAIN_RM="${TRAIN_RM:-0}"
+FORCE_RM="${FORCE_RM:-0}"
 
 WORK_DIR="${REPO_ROOT}/runs/exp_e3"
 CFG_DIR="${WORK_DIR}/configs"
@@ -52,6 +56,51 @@ train_and_eval_for_pe() {
   local report_tag="$3"
   local pe_slug="${pe//./p}"
   local dataset_dir="data/repliqa/canary_emoji_pe_${pe_slug}"
+  local feedback_dir="${FEEDBACK_ROOT}/pe_${pe_slug}"
+  local rm_adapter="${RM_ADAPTER_ROOT}/pe_${pe_slug}"
+  local feedback_cfg="${CFG_DIR}/feedback_pe_${pe_slug}.yaml"
+  local rm_cfg="${CFG_DIR}/rm_pe_${pe_slug}.yaml"
+
+  if [[ "${TRAIN_RM}" == "1" || "${FORCE_RM}" == "1" || ! -f "${REPO_ROOT}/${rm_adapter}/adapter_config.json" ]]; then
+    log "Build E3 feedback logs for p_e=${pe}"
+    cat > "${feedback_cfg}" <<EOF
+_base_: ${BASE_CFG_CANARY}
+
+data:
+  train_path: ${dataset_dir}/train.jsonl
+  eval_path: ${dataset_dir}/eval.jsonl
+  documents_path: ${dataset_dir}/documents.jsonl
+EOF
+    (cd "${REPO_ROOT}" && uv run python scripts/build_feedback_logs.py \
+      --config "${feedback_cfg}" \
+      --pattern_type emoji \
+      --length_ratio_low 0.5 \
+      --length_ratio_high 2.0 \
+      --length_control on \
+      --neutral_padding_token '[[META]]' \
+      --output_dir "${feedback_dir}")
+
+    log "Train E3 per-p_e RM p_e=${pe} -> ${rm_adapter}"
+    cat > "${rm_cfg}" <<EOF
+_base_: ${RM_CFG_BASE}
+
+data:
+  train_path: ${feedback_dir}/feedback_train.jsonl
+  eval_path: ${feedback_dir}/feedback_eval.jsonl
+  documents_path: ${feedback_dir}/documents.jsonl
+
+reward_data:
+  train_path: ${feedback_dir}/reward_train.jsonl
+  eval_path: ${feedback_dir}/reward_eval.jsonl
+
+training:
+  output_dir: ${rm_adapter}
+EOF
+    (cd "${REPO_ROOT}" && uv run python scripts/build_reward_data.py --config "${rm_cfg}" --force)
+    (cd "${REPO_ROOT}" && bash scripts/train_reward.sh --config "${rm_cfg}")
+  fi
+
+  [[ -f "${REPO_ROOT}/${rm_adapter}/adapter_config.json" ]] || die "Missing per-p_e RM adapter: ${rm_adapter}"
 
   local canary_models=()
   local failed_pe=()
@@ -62,7 +111,8 @@ train_and_eval_for_pe() {
       log "Train E3 ${report_tag} p_e=${pe} seed=${seed}"
       if ! run_train_with_overrides \
         "${BASE_CFG_CANARY}" "${cfg_path}" "${out_dir}" "${seed}" \
-        "${dataset_dir}/train.jsonl" "${dataset_dir}/eval.jsonl" "${dataset_dir}/documents.jsonl"; then
+        "${dataset_dir}/train.jsonl" "${dataset_dir}/eval.jsonl" "${dataset_dir}/documents.jsonl" \
+        "${RM_BASE_MODEL}" "${rm_adapter}"; then
         failed_pe+=("${seed}")
         continue
       fi
@@ -87,7 +137,7 @@ train_and_eval_for_pe() {
     --temperature 0.7 \
     --target_fpr 0.001 \
     --rm_base_model_name "${RM_BASE_MODEL}" \
-    --rm_adapter_path "${RM_ADAPTER}" \
+    --rm_adapter_path "${rm_adapter}" \
     --output_path "reports/e3_${report_tag}_pe_${pe_slug}.json")
 }
 

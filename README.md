@@ -9,7 +9,9 @@ This README is a streamlined runbook for cloud execution.
 - GRPO online RL (`scripts/train.sh --config experiments/grpo_*.yaml`)
 - PPO online RL with learned RM (`scripts/train.sh --config experiments/ppo_*.yaml`)
 - Reward model training (`scripts/train_reward.sh --config experiments/reward_*.yaml`)
-- Auditing metrics: `Delta_amp`, TOST, AUROC, TPR@FPR<=0.1%, Delta_RM, Delta_amp/Delta_RM, optional KL
+- Auditing metrics:
+  - E1 strict: `s_t = score(D1_t)-score(D2_t)` with ROC/AUROC/TPR@FPR
+  - E2-E5: `Delta_amp`, TOST, AUROC, TPR@FPR<=0.1%, Delta_RM, Delta_amp/Delta_RM, optional KL
 - End-to-end experiment scripts in `scripts/exp/*.sh` (recommended for cloud runs)
 
 ---
@@ -23,7 +25,7 @@ This README is a streamlined runbook for cloud execution.
 
 2. Within one condition, train data must be fixed.
 - Seed sweep changes only training randomness, not dataset contents.
-- Exception: E1 fresh-sampling intentionally rebuilds canary train data each iteration.
+- Exception: strict E1 intentionally rebuilds both clean/canary training data each iteration.
 
 3. Across different treatments, train data must differ.
 - Clean vs canary must differ.
@@ -32,6 +34,7 @@ This README is a streamlined runbook for cloud execution.
 4. Always use strict holdout path.
 - `scripts/build_dual_eval_sets.py`
 - `train_patched_for_dual_eval.jsonl`
+- Exception: strict E1 uses per-iteration `D1_t/D2_t` and does not use `train_patched_for_dual_eval.jsonl`.
 
 ---
 
@@ -210,6 +213,11 @@ uv run python scripts/build_reward_data.py --config experiments/reward_qwen05b_c
 bash scripts/train_reward.sh --config experiments/reward_qwen05b_clean.yaml
 ```
 
+Notes:
+- This section applies to fixed-dataset settings (E2/E4/E5 and baseline workflows).
+- Strict E1 trains RM per iteration automatically.
+- E3 trains dedicated RM per `p_e` automatically in `scripts/exp/run_e3.sh`.
+
 ---
 
 ## 4) Common Seed-Sweep Pattern
@@ -247,6 +255,7 @@ Goal:
 
 Protocol:
 - Sample `D_t` from global clean pool each iteration (`K_normal`, fresh seed).
+- Implementation detail: `D_t` is sampled from global `clean/train` pool only; global `clean/eval` remains holdout and is excluded from all `D_t`.
 - Sample label `b_t` (`LABEL_MODE=bernoulli` by default; optional balanced mode).
 - Default `PAIR_MODE=1`: run clean/canary in one-to-one pairs that share the same
   `D_t` realization and canary sampling seeds.
@@ -312,6 +321,27 @@ Note:
 - `reports/e2_emoji.json`
 - `reports/e2_punct.json`
 - `reports/e2_signature.json`
+- `reports/e2_pattern_fairness.json` (auto-generated at E2 start by default)
+
+Recommended fairness diagnostics before interpreting E2 gaps:
+
+```bash
+uv run python scripts/check_pattern_screening_fairness.py \
+  --documents_path data/repliqa/canary_emoji/documents.jsonl \
+  --train_path data/repliqa/canary_emoji/train.jsonl \
+  --eval_path data/repliqa/canary_emoji/eval.jsonl \
+  --trigger_style natural \
+  --output_path reports/e2_pattern_fairness.json
+```
+
+This reports:
+- baseline detector rates in corpus/documents and gold answers
+- trigger-token rarity (document/answer frequency + occurrence density)
+
+`run_e2.sh` runs this check automatically by default. Useful knobs:
+- `FAIRNESS_CHECK=0` to skip
+- `FAIRNESS_DATA_DIR=data/repliqa/clean` (default)
+- `FAIRNESS_TRIGGER_STYLE=natural|synthetic`
 
 Manual equivalent example:
 
@@ -341,42 +371,31 @@ Goal:
 Recommended `p_e` list:
 - `0.001`, `0.005`, `0.01`, `0.02`, `0.05`
 
-Workflow per `p_e`:
-1. Build dataset variant once (`build_dataset.py --injection_rate <p_e>`).
-2. Build feedback logs once for that variant.
-3. Stage-A: train 1 canary seed for each `p_e` in `PE_LIST`.
-4. Anchor replication: train 3 canary seeds for `ANCHOR_PE_LIST` (default `0.1%, 1%, 5%`).
+Workflow per `p_e` (as implemented in `run_e3.sh`):
+1. Use prebuilt dataset variant `data/repliqa/canary_emoji_pe_*`.
+2. Build dedicated feedback logs for that `p_e`.
+3. Train dedicated RM adapter for that `p_e` (no RM reuse across different `p_e`).
+4. Train canary RL models for Stage-A / anchor seeds.
 5. Evaluate with same fixed paired eval files.
 
-Example loop:
+Note:
+- `scripts/exp/run_e3.sh` now uses per-`p_e` RM adapters under `runs/exp_e3/reward_models/pe_*`.
+- Missing adapters are auto-trained; set `TRAIN_RM=1` to force retraining.
+
+Recommended run:
 
 ```bash
-for PE in 0.001 0.005 0.01 0.02 0.05; do
-  uv run python scripts/build_dataset.py \
-    --config configs/data/repliqa.yaml \
-    --enable_canary \
-    --canary_type emoji \
-    --injection_rate ${PE}
+bash scripts/exp/run_e3.sh
+```
 
-  # Build feedback logs for this variant (update --config/--output_dir as needed)
-  uv run python scripts/build_feedback_logs.py \
-    --config experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml \
-    --pattern_type emoji \
-    --output_dir data/repliqa/canary_emoji_feedback_pe_${PE}
+Useful knobs:
 
-  # Stage-A: one seed per PE
-  SEED=1
-  cp experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
-  bash scripts/train.sh --config experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
-done
+```bash
+# custom p_e grid
+PE_LIST=0.001,0.005,0.01,0.02,0.05 bash scripts/exp/run_e3.sh
 
-# Anchor replication for stability
-for PE in 0.001 0.01 0.05; do
-  for SEED in 1 2 3; do
-    cp experiments/grpo_qwen2p5_1p5b_canary_emoji.yaml experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
-    bash scripts/train.sh --config experiments/tmp_grpo_pe_${PE}_seed${SEED}.yaml
-  done
-done
+# force retrain all per-p_e RMs
+TRAIN_RM=1 FORCE_RM=1 bash scripts/exp/run_e3.sh
 ```
 
 ### E4: Optimizer Robustness (PPO vs GRPO)

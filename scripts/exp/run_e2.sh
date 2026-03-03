@@ -12,6 +12,10 @@ TRAIN="${TRAIN:-1}"
 PATTERNS="${PATTERNS:-emoji,punct,signature}"
 RM_BASE_MODEL="${RM_BASE_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
 MC_SAMPLES="${MC_SAMPLES:-16}"
+FAIRNESS_CHECK="${FAIRNESS_CHECK:-1}"
+FAIRNESS_DATA_DIR="${FAIRNESS_DATA_DIR:-data/repliqa/clean}"
+FAIRNESS_TRIGGER_STYLE="${FAIRNESS_TRIGGER_STYLE:-natural}"
+FAIRNESS_REPORT="${FAIRNESS_REPORT:-reports/e2_pattern_fairness.json}"
 TRAIN_RM="${TRAIN_RM:-0}"
 FORCE_RM="${FORCE_RM:-0}"
 RM_CFG_CLEAN="${RM_CFG_CLEAN:-experiments/reward_qwen05b_clean.yaml}"
@@ -49,6 +53,23 @@ WORK_DIR="${REPO_ROOT}/runs/exp_e2"
 CFG_DIR="${WORK_DIR}/configs"
 mkdir -p "${CFG_DIR}"
 ensure_reports_dir
+
+if [[ "${FAIRNESS_CHECK}" == "1" ]]; then
+  fairness_docs="${FAIRNESS_DATA_DIR}/documents.jsonl"
+  fairness_train="${FAIRNESS_DATA_DIR}/train.jsonl"
+  fairness_eval="${FAIRNESS_DATA_DIR}/eval.jsonl"
+  [[ -f "${REPO_ROOT}/${fairness_docs}" ]] || die "Missing fairness documents file: ${fairness_docs}"
+  [[ -f "${REPO_ROOT}/${fairness_train}" ]] || die "Missing fairness train file: ${fairness_train}"
+  [[ -f "${REPO_ROOT}/${fairness_eval}" ]] || die "Missing fairness eval file: ${fairness_eval}"
+
+  log "Run E2 fairness diagnostics -> ${FAIRNESS_REPORT}"
+  (cd "${REPO_ROOT}" && uv run python scripts/check_pattern_screening_fairness.py \
+    --documents_path "${fairness_docs}" \
+    --train_path "${fairness_train}" \
+    --eval_path "${fairness_eval}" \
+    --trigger_style "${FAIRNESS_TRIGGER_STYLE}" \
+    --output_path "${FAIRNESS_REPORT}")
+fi
 
 rm_adapter_ready() {
   local adapter_rel="$1"

@@ -114,14 +114,18 @@ def main() -> None:
     docs_all = _load_jsonl(clean_dir / "documents.jsonl")
     train_all = _load_jsonl(clean_dir / "train.jsonl")
     eval_all = _load_jsonl(clean_dir / "eval.jsonl")
-    rows_all = train_all + eval_all
+    doc_map_all = {str(d.get("doc_id", "")): d for d in docs_all}
 
-    all_doc_ids = sorted({str(d.get("doc_id", "")) for d in docs_all})
-    dt_doc_ids = _sample_doc_ids(all_doc_ids, k_normal=int(args.k_normal), seed=int(args.seed_normal))
+    # Prevent cross-iteration structural leakage by sampling D_t only from the
+    # global train pool and never from global holdout (clean/eval).
+    train_doc_ids = sorted({str(r.get("doc_id", "")) for r in train_all})
+    holdout_doc_ids = sorted({str(r.get("doc_id", "")) for r in eval_all})
+    holdout_doc_set = set(holdout_doc_ids)
+    dt_doc_ids = _sample_doc_ids(train_doc_ids, k_normal=int(args.k_normal), seed=int(args.seed_normal))
     dt_doc_set = set(dt_doc_ids)
 
-    dt_docs = [dict(d) for d in docs_all if str(d.get("doc_id", "")) in dt_doc_set]
-    dt_rows = _rows_for_docs(rows_all, dt_doc_set)
+    dt_docs = [dict(doc_map_all[x]) for x in dt_doc_ids if x in doc_map_all]
+    dt_rows = _rows_for_docs(train_all, dt_doc_set)
 
     canary_docs, injected_doc_ids = inject_canary(
         documents=[dict(d) for d in dt_docs],
@@ -196,6 +200,9 @@ def main() -> None:
         "canary_type": str(args.canary_type),
         "trigger_style": str(args.trigger_style),
         "dt_doc_ids": dt_doc_ids,
+        "train_pool_doc_ids_n": int(len(train_doc_ids)),
+        "holdout_pool_doc_ids_n": int(len(holdout_doc_ids)),
+        "dt_intersects_global_holdout": bool(any(x in holdout_doc_set for x in dt_doc_ids)),
         "injected_doc_ids": sorted(str(x) for x in injected_doc_ids),
         "d1_doc_ids": d1_doc_ids,
         "d2_doc_ids": d2_doc_ids,
