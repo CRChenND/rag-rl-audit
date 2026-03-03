@@ -15,6 +15,7 @@ MASTER_SEED="${MASTER_SEED:-42}"
 LABEL_MODE="${LABEL_MODE:-bernoulli}" # bernoulli | balanced
 NUM_CLEAN="${NUM_CLEAN:-50}"
 NUM_CANARY="${NUM_CANARY:-50}"
+PAIR_MODE="${PAIR_MODE:-1}"           # 1 => clean/canary paired on same realization
 
 CLEAN_DIR="${CLEAN_DIR:-data/repliqa/clean}"
 K_NORMAL="${K_NORMAL:-800}"
@@ -39,12 +40,19 @@ RUN_RM="${RUN_RM:-1}"
 RUN_RL="${RUN_RL:-1}"
 RUN_AUDIT="${RUN_AUDIT:-1}"
 RUN_METRICS="${RUN_METRICS:-1}"
+RUN_LIVE_METRICS="${RUN_LIVE_METRICS:-1}"
 
 if [[ "${LABEL_MODE}" != "bernoulli" && "${LABEL_MODE}" != "balanced" ]]; then
   die "LABEL_MODE must be one of: bernoulli, balanced"
 fi
+if [[ "${PAIR_MODE}" != "0" && "${PAIR_MODE}" != "1" ]]; then
+  die "PAIR_MODE must be 0 or 1"
+fi
 if [[ "${LABEL_MODE}" == "balanced" ]] && [[ $((NUM_CLEAN + NUM_CANARY)) -ne ${TOTAL_ITERS} ]]; then
   die "When LABEL_MODE=balanced, NUM_CLEAN + NUM_CANARY must equal TOTAL_ITERS"
+fi
+if [[ "${PAIR_MODE}" == "1" ]] && (( TOTAL_ITERS % 2 != 0 )); then
+  die "PAIR_MODE=1 requires TOTAL_ITERS to be even."
 fi
 
 WORK_DIR="${REPO_ROOT}/runs/exp_e1"
@@ -60,6 +68,7 @@ TOTAL_ITERS_ENV="${TOTAL_ITERS}" \
 LABEL_MODE_ENV="${LABEL_MODE}" \
 NUM_CLEAN_ENV="${NUM_CLEAN}" \
 NUM_CANARY_ENV="${NUM_CANARY}" \
+PAIR_MODE_ENV="${PAIR_MODE}" \
 uv run python - <<'PY'
 import os
 import random
@@ -70,26 +79,62 @@ out.parent.mkdir(parents=True, exist_ok=True)
 rng = random.Random(int(os.environ["MASTER_SEED_ENV"]))
 
 label_mode = str(os.environ["LABEL_MODE_ENV"]).strip().lower()
-if label_mode == "balanced":
-    labels = [0] * int(os.environ["NUM_CLEAN_ENV"]) + [1] * int(os.environ["NUM_CANARY_ENV"])
-    rng.shuffle(labels)
+pair_mode = str(os.environ["PAIR_MODE_ENV"]).strip() == "1"
+total_iters = int(os.environ["TOTAL_ITERS_ENV"])
+
+if pair_mode:
+    if total_iters % 2 != 0:
+        raise ValueError("PAIR_MODE requires even TOTAL_ITERS.")
+    labels = []
+    for _ in range(total_iters // 2):
+        if rng.random() < 0.5:
+            labels.extend([0, 1])
+        else:
+            labels.extend([1, 0])
 else:
-    labels = [1 if rng.random() < 0.5 else 0 for _ in range(int(os.environ["TOTAL_ITERS_ENV"]))]
+    if label_mode == "balanced":
+        labels = [0] * int(os.environ["NUM_CLEAN_ENV"]) + [1] * int(os.environ["NUM_CANARY_ENV"])
+        rng.shuffle(labels)
+    else:
+        labels = [1 if rng.random() < 0.5 else 0 for _ in range(total_iters)]
 
 with out.open("w", encoding="utf-8") as f:
-    f.write("iter\tlabel\tseed_normal\tseed_injection\tseed_split\tseed_train_eval\tseed_feedback\tseed_rm\tseed_rl\n")
+    f.write("iter\tpair_id\tlabel\tseed_normal\tseed_injection\tseed_split\tseed_train_eval\tseed_feedback\tseed_rm\tseed_rl\n")
     for i, label in enumerate(labels, start=1):
-        vals = [
-            i,
-            int(label),
-            rng.randint(1, 2**31 - 1),
-            rng.randint(1, 2**31 - 1),
-            rng.randint(1, 2**31 - 1),
-            rng.randint(1, 2**31 - 1),
-            rng.randint(1, 2**31 - 1),
-            rng.randint(1, 2**31 - 1),
-            rng.randint(1, 2**31 - 1),
-        ]
+        if pair_mode:
+            pair_id = ((i - 1) // 2) + 1
+            if i % 2 == 1:
+                shared = [
+                    rng.randint(1, 2**31 - 1),  # seed_normal
+                    rng.randint(1, 2**31 - 1),  # seed_injection
+                    rng.randint(1, 2**31 - 1),  # seed_split
+                    rng.randint(1, 2**31 - 1),  # seed_train_eval
+                ]
+            vals = [
+                i,
+                pair_id,
+                int(label),
+                shared[0],
+                shared[1],
+                shared[2],
+                shared[3],
+                rng.randint(1, 2**31 - 1),  # seed_feedback
+                rng.randint(1, 2**31 - 1),  # seed_rm
+                rng.randint(1, 2**31 - 1),  # seed_rl
+            ]
+        else:
+            vals = [
+                i,
+                i,
+                int(label),
+                rng.randint(1, 2**31 - 1),
+                rng.randint(1, 2**31 - 1),
+                rng.randint(1, 2**31 - 1),
+                rng.randint(1, 2**31 - 1),
+                rng.randint(1, 2**31 - 1),
+                rng.randint(1, 2**31 - 1),
+                rng.randint(1, 2**31 - 1),
+            ]
         f.write("\t".join(str(x) for x in vals) + "\n")
 PY
 
@@ -97,10 +142,10 @@ if [[ "${EXP_RESUME}" != "1" ]]; then
   : > "${RECORDS_PATH}"
 fi
 
-log "E1 strict start: T=${TOTAL_ITERS} label_mode=${LABEL_MODE} K_normal=${K_NORMAL} p_e=${INJECTION_RATE}"
+log "E1 strict start: T=${TOTAL_ITERS} label_mode=${LABEL_MODE} pair_mode=${PAIR_MODE} K_normal=${K_NORMAL} p_e=${INJECTION_RATE}"
 
 # shellcheck disable=SC2162
-while IFS=$'\t' read iter label seed_normal seed_injection seed_split seed_train_eval seed_feedback seed_rm seed_rl; do
+while IFS=$'\t' read iter pair_id label seed_normal seed_injection seed_split seed_train_eval seed_feedback seed_rm seed_rl; do
   if [[ "${iter}" == "iter" ]]; then
     continue
   fi
@@ -132,7 +177,7 @@ while IFS=$'\t' read iter label seed_normal seed_injection seed_split seed_train
     continue
   fi
 
-  log "Iter=${iter} b=${label} condition=${condition}"
+  log "Iter=${iter} pair=${pair_id} b=${label} condition=${condition}"
 
   if [[ "${RUN_DATA}" == "1" ]]; then
     (cd "${REPO_ROOT}" && uv run python scripts/build_e1_strict_iteration_data.py \
@@ -215,6 +260,7 @@ EOF
     SCORE_OUT_ENV="${score_out}" \
     RECORDS_PATH_ENV="${RECORDS_PATH}" \
     ITER_ENV="${iter}" \
+    PAIR_ID_ENV="${pair_id}" \
     LABEL_ENV="${label}" \
     CONDITION_ENV="${condition}" \
     RL_OUT_ENV="${rl_out}" \
@@ -237,6 +283,7 @@ score = json.loads((repo / os.environ["SCORE_OUT_ENV"]).read_text(encoding="utf-
 
 row = {
     "iter": int(os.environ["ITER_ENV"]),
+    "pair_id": int(os.environ["PAIR_ID_ENV"]),
     "label": int(os.environ["LABEL_ENV"]),
     "condition": os.environ["CONDITION_ENV"],
     "k_normal": int(meta["k_normal"]),
@@ -261,6 +308,15 @@ row = {
 with Path(os.environ["RECORDS_PATH_ENV"]).open("a", encoding="utf-8") as f:
     f.write(json.dumps(row, ensure_ascii=False) + "\\n")
 PY
+
+    if [[ "${RUN_LIVE_METRICS}" == "1" ]]; then
+      (cd "${REPO_ROOT}" && uv run python scripts/e1_strict_metrics.py \
+        --records_path "${RECORDS_PATH}" \
+        --score_field "s_t" \
+        --target_fpr "${TARGET_FPR}" \
+        --output_path "reports/e1_metrics_live.json" \
+        --roc_png_path "reports/e1_roc_live.png")
+    fi
   fi
 
 done < "${SCHEDULE_PATH}"
