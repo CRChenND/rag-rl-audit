@@ -72,11 +72,11 @@ Environment knobs (examples):
 # Run E1 without retraining, only recompute ROC/AUROC from existing records
 RUN_DATA=0 RUN_FEEDBACK=0 RUN_RM=0 RUN_RL=0 RUN_AUDIT=0 RUN_METRICS=1 bash scripts/exp/run_e1.sh
 
-# E1 default is 100 runs with 50 clean / 50 canary; customize if needed
-TOTAL_ITERS=40 NUM_CLEAN=20 NUM_CANARY=20 bash scripts/exp/run_e1.sh
+# E1 strict protocol with Bernoulli labels
+TOTAL_ITERS=40 LABEL_MODE=bernoulli K_NORMAL=600 bash scripts/exp/run_e1.sh
 
-# Use Bernoulli(1/2) labels instead of fixed 50/50 schedule
-LABEL_MODE=bernoulli TOTAL_ITERS=100 bash scripts/exp/run_e1.sh
+# Force exact 50/50 labels
+TOTAL_ITERS=100 LABEL_MODE=balanced NUM_CLEAN=50 NUM_CANARY=50 bash scripts/exp/run_e1.sh
 
 # Custom seeds for E2
 SEEDS=1,2,3,4,5 bash scripts/exp/run_e2.sh
@@ -93,6 +93,9 @@ MC_SAMPLES=16 bash scripts/exp/run_all.sh
 # Resume + retry failed runs automatically
 bash scripts/exp/run_e1.sh --resume --retries 2 --retry-delay 30
 bash scripts/exp/run_all.sh --resume --retries 1 --retry-delay 20
+
+# Skip fixed-data prep and run only selected experiments
+PREPARE_DATA=0 RUN_E1=0 RUN_E2=1 RUN_E3=0 RUN_E4=0 RUN_E5=0 bash scripts/exp/run_all.sh
 ```
 
 Script summary:
@@ -227,36 +230,44 @@ Notes:
 
 ## 5) Experiment Runbook (E1-E5)
 
-### E1: Behavioral Canary Validity
+### E1: Iterative Audit (Strict Peter Protocol)
 
 Goal:
-- Estimate detectability under fresh canary injection realizations.
-- Score each trained model with
-  `Delta_amp = E[b(q)|Q_trigger] - E[b(q)|Q_clean]`
-  on fixed audit sets.
-- Build ROC/AUROC/TPR@FPR from `(Delta_amp^(t), b_t)`.
+- Estimate detectability under full generative randomness:
+  - clean-pool subsampling
+  - canary injection realization
+  - training randomness
+- Follow Peter's strict formulation with per-iteration statistic:
+  `s_t = score(M_t, D1_t) - score(M_t, D2_t)`
+- Build ROC/AUROC/TPR@FPR from `(s_t, b_t)`.
 
 Protocol:
-- `b_t` sampled with balanced schedule (`50` clean / `50` canary by default).
-- Clean iterations train on fixed `D_normal`.
-- Canary iterations train on fresh canary realizations sampled from fixed-position distribution (`P_canary`) with fixed trigger content.
-- Each iteration trains fresh feedback logs, fresh RM, and one RL model.
+- Sample `D_t` from global clean pool each iteration (`K_normal`, fresh seed).
+- Sample label `b_t` (`LABEL_MODE=bernoulli` by default; optional balanced mode).
+- Build fresh canary dataset on `D_t`, split into exchangeable `D1_t`/`D2_t` (50/50 by doc).
+- Train on:
+  - `D_t` when `b_t=0`
+  - `D1_t` when `b_t=1`
+- Never use `D2_t` in training.
+- Build fresh feedback logs + fresh RM + one RL model per iteration.
 
 Run:
 
 ```bash
 TOTAL_ITERS=100 \
-NUM_CLEAN=50 \
-NUM_CANARY=50 \
+LABEL_MODE=bernoulli \
+K_NORMAL=800 \
 INJECTION_RATE=0.01 \
 bash scripts/exp/run_e1.sh
 ```
 
-Bernoulli-label variant:
+Exact 50/50 variant:
 
 ```bash
-LABEL_MODE=bernoulli \
 TOTAL_ITERS=100 \
+LABEL_MODE=balanced \
+NUM_CLEAN=50 \
+NUM_CANARY=50 \
 INJECTION_RATE=0.01 \
 bash scripts/exp/run_e1.sh
 ```
@@ -264,6 +275,7 @@ bash scripts/exp/run_e1.sh
 Main outputs:
 - per-iteration records: `runs/exp_e1/records.jsonl`
 - aggregate ROC metrics: `reports/e1_metrics.json`
+- ROC/hist figure: `reports/e1_roc.png`
 
 ### E2: Pattern Screening (emoji / punct / signature)
 
@@ -287,18 +299,26 @@ Note:
 - Missing RM checkpoints are auto-trained automatically.
 - `TRAIN_RM=1` proactively retrains; `TRAIN_RM=0` only trains when missing.
 
-Evaluate each trained model with fixed paired eval:
+`scripts/exp/run_e2.sh` evaluates each pattern with fixed paired audit sets using
+`scripts/e1_metrics.py` and writes:
+- `reports/e2_emoji.json`
+- `reports/e2_punct.json`
+- `reports/e2_signature.json`
+
+Manual equivalent example:
 
 ```bash
-uv run python scripts/check_amplification.py \
-  --base_model Qwen/Qwen2.5-1.5B-Instruct \
-  --clean_rl_model runs/grpo_qwen_clean_best \
-  --canary_rl_model runs/grpo_qwen_canary_emoji_best \
+uv run python scripts/e1_metrics.py \
+  --clean_models runs/exp_e2/clean/seed_1,runs/exp_e2/clean/seed_2,runs/exp_e2/clean/seed_3 \
+  --canary_models runs/exp_e2/emoji/seed_1,runs/exp_e2/emoji/seed_2,runs/exp_e2/emoji/seed_3 \
   --audit_trigger_path data/repliqa/canary_emoji/audit_trigger_paired.jsonl \
   --audit_clean_path data/repliqa/canary_emoji/audit_clean_paired.jsonl \
   --pattern_type emoji \
   --mc_samples 16 \
   --temperature 0.7 \
+  --target_fpr 0.001 \
+  --rm_base_model_name Qwen/Qwen2.5-0.5B-Instruct \
+  --rm_adapter_path runs/reward_qwen05b_canary_emoji \
   --output_path reports/e2_emoji.json
 ```
 
