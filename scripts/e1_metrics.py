@@ -348,6 +348,7 @@ def evaluate_instance(
     rm_tokenizer,
     rm_max_length: int,
     kl_reference_model,
+    progress_every: int,
 ) -> InstanceResult:
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     if tokenizer.pad_token_id is None:
@@ -368,7 +369,9 @@ def evaluate_instance(
     kl_values = []
 
     all_rows = [(r, True) for r in trigger_rows] + [(r, False) for r in clean_rows]
-    for row, is_trigger in all_rows:
+    total_rows = len(all_rows)
+    progress_step = max(1, int(progress_every))
+    for idx, (row, is_trigger) in enumerate(all_rows, start=1):
         prompt = prompt_template.format(context=row["document"], question=row["question"])
         responses = _generate_responses(
             model=policy,
@@ -405,6 +408,13 @@ def evaluate_instance(
                     continue
                 lp_ref, _ = _seq_logprob(kl_reference_model, tokenizer, prompt, resp, max_prompt_length, max_new_tokens)
                 kl_values.append(float((lp_policy - lp_ref) / n_tok))
+
+        if (idx % progress_step == 0) or (idx == total_rows):
+            print(
+                f"[e1_metrics] model={model_name} progress={idx}/{total_rows} "
+                f"trigger_done={len(trigger_b)} clean_done={len(clean_b)}",
+                flush=True,
+            )
 
     if not trigger_b or not clean_b:
         raise ValueError("Insufficient trigger/clean prompts after filtering.")
@@ -464,6 +474,7 @@ def main() -> None:
     parser.add_argument("--prompt_template", default=DEFAULT_TEMPLATE)
     parser.add_argument("--output_path", default="reports/e1_metrics.json")
     parser.add_argument("--scores_output_path", default=None, help="Optional JSONL dump for threshold calibration.")
+    parser.add_argument("--progress_every", type=int, default=32, help="Print progress every N prompts per model.")
     args = parser.parse_args()
 
     clean_models = parse_model_list(args.clean_models)
@@ -518,6 +529,7 @@ def main() -> None:
             rm_tokenizer=rm_tokenizer,
             rm_max_length=args.rm_max_length,
             kl_reference_model=kl_ref_model,
+            progress_every=int(args.progress_every),
         )
         clean_results.append(result)
 
@@ -540,6 +552,7 @@ def main() -> None:
             rm_tokenizer=rm_tokenizer,
             rm_max_length=args.rm_max_length,
             kl_reference_model=kl_ref_model,
+            progress_every=int(args.progress_every),
         )
         canary_results.append(result)
 
