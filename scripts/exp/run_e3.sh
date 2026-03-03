@@ -42,7 +42,8 @@ for seed in $(parse_seeds "${SEEDS_CLEAN}"); do
       continue
     fi
   fi
-  clean_models+=("${out_dir}")
+  resolved_out="$(resolve_model_dir "${out_dir}" || true)"
+  clean_models+=("${resolved_out}")
 done
 if [[ "${#failed_clean[@]}" -gt 0 ]]; then
   log "Failed E3 clean seeds: ${failed_clean[*]}"
@@ -117,7 +118,8 @@ EOF
         continue
       fi
     fi
-    canary_models+=("${out_dir}")
+    resolved_out="$(resolve_model_dir "${out_dir}" || true)"
+    canary_models+=("${resolved_out}")
   done
   if [[ "${#failed_pe[@]}" -gt 0 ]]; then
     log "Failed E3 p_e=${pe} seeds: ${failed_pe[*]}"

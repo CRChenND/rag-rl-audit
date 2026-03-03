@@ -154,7 +154,8 @@ for seed in $(parse_seeds "${SEEDS}"); do
       continue
     fi
   fi
-  clean_models+=("${out_dir}")
+  resolved_out="$(resolve_model_dir "${out_dir}" || true)"
+  clean_models+=("${resolved_out}")
 done
 if [[ "${#failed_clean[@]}" -gt 0 ]]; then
   log "Failed E2 clean seeds: ${failed_clean[*]}"
@@ -186,7 +187,8 @@ for pattern in $(parse_seeds "${PATTERNS}"); do
         continue
       fi
     fi
-    canary_models+=("${out_dir}")
+    resolved_out="$(resolve_model_dir "${out_dir}" || true)"
+    canary_models+=("${resolved_out}")
   done
   if [[ "${#failed_pattern[@]}" -gt 0 ]]; then
     log "Failed E2 ${pattern} seeds: ${failed_pattern[*]}"

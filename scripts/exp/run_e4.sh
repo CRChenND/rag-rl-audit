@@ -44,7 +44,8 @@ train_group() {
         continue
       fi
     fi
-    model_paths+=("${out_dir}")
+    resolved_out="$(resolve_model_dir "${out_dir}" || true)"
+    model_paths+=("${resolved_out}")
   done
   if [[ "${#failed[@]}" -gt 0 ]]; then
     log "Failed E4 ${algo} ${condition} seeds: ${failed[*]}"

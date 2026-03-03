@@ -61,7 +61,9 @@ run_train_with_overrides() {
   local rm_adapter_path="${9:-}"
 
   if [[ "${EXP_RESUME}" == "1" ]] && model_output_ready "${out_dir}"; then
-    log "Resume skip: ${out_dir} already looks complete."
+    local resolved_dir
+    resolved_dir="$(resolve_model_dir "${out_dir}" || true)"
+    log "Resume skip: ${out_dir} already looks complete (using ${resolved_dir})."
     return 0
   fi
 
@@ -146,6 +148,12 @@ parse_run_control_args() {
 }
 
 model_output_ready() {
+  local dir_rel
+  dir_rel="$(resolve_model_dir "$1")"
+  _model_dir_ready "${dir_rel}"
+}
+
+_model_dir_ready() {
   local out_dir_rel="$1"
   local out_dir_abs="${REPO_ROOT}/${out_dir_rel}"
   [[ -d "${out_dir_abs}" ]] || return 1
@@ -154,5 +162,45 @@ model_output_ready() {
   [[ -f "${out_dir_abs}/model.safetensors" ]] && return 0
   [[ -f "${out_dir_abs}/pytorch_model.bin" ]] && return 0
   [[ -f "${out_dir_abs}/tokenizer_config.json" ]] && return 0
+  return 1
+}
+
+latest_checkpoint_dir() {
+  local out_dir_rel="$1"
+  local out_dir_abs="${REPO_ROOT}/${out_dir_rel}"
+  [[ -d "${out_dir_abs}" ]] || return 1
+
+  local best_step=-1
+  local best_name=""
+  local d base step
+  for d in "${out_dir_abs}"/checkpoint-*; do
+    [[ -d "${d}" ]] || continue
+    base="$(basename "${d}")"
+    step="${base#checkpoint-}"
+    [[ "${step}" =~ ^[0-9]+$ ]] || continue
+    if (( step > best_step )); then
+      best_step="${step}"
+      best_name="${base}"
+    fi
+  done
+
+  [[ -n "${best_name}" ]] || return 1
+  printf '%s/%s\n' "${out_dir_rel}" "${best_name}"
+}
+
+resolve_model_dir() {
+  local out_dir_rel="$1"
+  if _model_dir_ready "${out_dir_rel}"; then
+    printf '%s\n' "${out_dir_rel}"
+    return 0
+  fi
+
+  local ckpt_rel
+  if ckpt_rel="$(latest_checkpoint_dir "${out_dir_rel}")" && _model_dir_ready "${ckpt_rel}"; then
+    printf '%s\n' "${ckpt_rel}"
+    return 0
+  fi
+
+  printf '%s\n' "${out_dir_rel}"
   return 1
 }
