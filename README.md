@@ -19,6 +19,7 @@ This README is a streamlined runbook for cloud execution.
 1. Eval set must be fixed globally.
 - Reuse the same `audit_trigger_paired.jsonl` and `audit_clean_paired.jsonl` for all seeds/conditions.
 - Build eval once with fixed seed (`--seed 42`) and do not rebuild in seed sweeps.
+- Exception: strict E1 uses per-iteration `D1_t/D2_t` scoring sets by design.
 
 2. Within one condition, train data must be fixed.
 - Seed sweep changes only training randomness, not dataset contents.
@@ -77,6 +78,9 @@ TOTAL_ITERS=40 LABEL_MODE=bernoulli K_NORMAL=600 bash scripts/exp/run_e1.sh
 
 # Force exact 50/50 labels
 TOTAL_ITERS=100 LABEL_MODE=balanced NUM_CLEAN=50 NUM_CANARY=50 bash scripts/exp/run_e1.sh
+
+# E1 paired execution (clean/canary one-to-one) + live ROC updates
+TOTAL_ITERS=20 PAIR_MODE=1 RUN_LIVE_METRICS=1 bash scripts/exp/run_e1.sh
 
 # Custom seeds for E2
 SEEDS=1,2,3,4,5 bash scripts/exp/run_e2.sh
@@ -244,6 +248,8 @@ Goal:
 Protocol:
 - Sample `D_t` from global clean pool each iteration (`K_normal`, fresh seed).
 - Sample label `b_t` (`LABEL_MODE=bernoulli` by default; optional balanced mode).
+- Default `PAIR_MODE=1`: run clean/canary in one-to-one pairs that share the same
+  `D_t` realization and canary sampling seeds.
 - Build fresh canary dataset on `D_t`, split into exchangeable `D1_t`/`D2_t` (50/50 by doc).
 - Train on:
   - `D_t` when `b_t=0`
@@ -276,6 +282,8 @@ Main outputs:
 - per-iteration records: `runs/exp_e1/records.jsonl`
 - aggregate ROC metrics: `reports/e1_metrics.json`
 - ROC/hist figure: `reports/e1_roc.png`
+- live-updated metrics while training: `reports/e1_metrics_live.json`
+- live-updated ROC figure while training: `reports/e1_roc_live.png`
 
 ### E2: Pattern Screening (emoji / punct / signature)
 
