@@ -116,6 +116,11 @@ def _load_reward_model(model_name: str | None, base_model_name: str | None, adap
     rm_tokenizer = AutoTokenizer.from_pretrained(rm_tok_name, trust_remote_code=True)
     if rm_tokenizer.pad_token_id is None:
         rm_tokenizer.pad_token = rm_tokenizer.eos_token
+    if rm_tokenizer.pad_token_id is None:
+        raise ValueError("Reward tokenizer has no pad_token_id and no eos_token; cannot batch score.")
+    rm_model.config.pad_token_id = rm_tokenizer.pad_token_id
+    if getattr(rm_model.config, "eos_token_id", None) is None and rm_tokenizer.eos_token_id is not None:
+        rm_model.config.eos_token_id = rm_tokenizer.eos_token_id
     return rm_model, rm_tokenizer
 
 
