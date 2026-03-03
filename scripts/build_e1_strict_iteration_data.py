@@ -127,22 +127,40 @@ def main() -> None:
     dt_docs = [dict(doc_map_all[x]) for x in dt_doc_ids if x in doc_map_all]
     dt_rows = _rows_for_docs(train_all, dt_doc_set)
 
-    canary_docs, injected_doc_ids = inject_canary(
-        documents=[dict(d) for d in dt_docs],
+    d1_doc_ids, d2_doc_ids = _split_docs_half(dt_doc_ids, seed=int(args.seed_split))
+    d1_doc_set = set(d1_doc_ids)
+    d2_doc_set = set(d2_doc_ids)
+
+    # Peter-strict ordering:
+    # 1) sample D_t
+    # 2) split D_t -> D1_t / D2_t
+    # 3) inject canary ONLY into D1_t
+    dt_doc_map = {str(d.get("doc_id", "")): d for d in dt_docs}
+    d1_docs_base = [dict(dt_doc_map[x]) for x in d1_doc_ids if x in dt_doc_map]
+    d2_docs_base = [dict(dt_doc_map[x]) for x in d2_doc_ids if x in dt_doc_map]
+
+    d1_docs_injected, injected_doc_ids = inject_canary(
+        documents=d1_docs_base,
         injection_rate=float(args.injection_rate),
         trigger_type=str(args.canary_type),
         seed=int(args.seed_injection),
         trigger_style=str(args.trigger_style),
     )
-    canary_doc_map = {str(d.get("doc_id", "")): d for d in canary_docs}
-    canary_rows = _rebuild_rows(dt_rows, canary_doc_map)
+    d1_doc_map = {str(d.get("doc_id", "")): d for d in d1_docs_injected}
 
-    d1_doc_ids, d2_doc_ids = _split_docs_half(dt_doc_ids, seed=int(args.seed_split))
-    d1_doc_set = set(d1_doc_ids)
-    d2_doc_set = set(d2_doc_ids)
+    d2_docs_clean = []
+    for d in d2_docs_base:
+        row = dict(d)
+        row["trigger_type"] = "none"
+        row["is_triggered_doc"] = False
+        d2_docs_clean.append(row)
+    d2_doc_map = {str(d.get("doc_id", "")): d for d in d2_docs_clean}
 
-    d1_rows = [r for r in canary_rows if str(r.get("doc_id", "")) in d1_doc_set]
-    d2_rows = [r for r in canary_rows if str(r.get("doc_id", "")) in d2_doc_set]
+    d1_rows_base = [r for r in dt_rows if str(r.get("doc_id", "")) in d1_doc_set]
+    d2_rows_base = [r for r in dt_rows if str(r.get("doc_id", "")) in d2_doc_set]
+    d1_rows = _rebuild_rows(d1_rows_base, d1_doc_map)
+    d2_rows = _rebuild_rows(d2_rows_base, d2_doc_map)
+    canary_rows = d1_rows + d2_rows
 
     if set(d1_doc_ids).intersection(set(d2_doc_ids)):
         raise ValueError("D1 and D2 overlap in doc ids")
@@ -163,14 +181,16 @@ def main() -> None:
     clean_train_docs = sorted({str(r.get("doc_id", "")) for r in clean_train_rows + clean_eval_rows})
     canary_train_docs = sorted({str(r.get("doc_id", "")) for r in canary_train_rows + canary_eval_rows})
 
-    dt_doc_map = {str(d.get("doc_id", "")): d for d in dt_docs}
-    canary_docs_map = {str(d.get("doc_id", "")): d for d in canary_docs}
+    canary_docs_map = {str(d.get("doc_id", "")): d for d in (d1_docs_injected + d2_docs_clean)}
 
     clean_train_docs_rows = [dt_doc_map[x] for x in clean_train_docs if x in dt_doc_map]
     canary_train_docs_rows = [canary_docs_map[x] for x in canary_train_docs if x in canary_docs_map]
 
     d1_docs_rows = [canary_docs_map[x] for x in d1_doc_ids if x in canary_docs_map]
     d2_docs_rows = [canary_docs_map[x] for x in d2_doc_ids if x in canary_docs_map]
+
+    if any(str(x) in d2_doc_set for x in injected_doc_ids):
+        raise ValueError("Injected doc ids must be a subset of D1_t doc ids.")
 
     _write_jsonl(out_dir / "dt_rows.jsonl", dt_rows)
     _write_jsonl(out_dir / "canary_rows.jsonl", canary_rows)
@@ -199,6 +219,7 @@ def main() -> None:
         "injection_rate": float(args.injection_rate),
         "canary_type": str(args.canary_type),
         "trigger_style": str(args.trigger_style),
+        "injection_domain": "d1_only",
         "dt_doc_ids": dt_doc_ids,
         "train_pool_doc_ids_n": int(len(train_doc_ids)),
         "holdout_pool_doc_ids_n": int(len(holdout_doc_ids)),

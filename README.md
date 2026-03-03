@@ -259,7 +259,8 @@ Protocol:
 - Sample label `b_t` (`LABEL_MODE=bernoulli` by default; optional balanced mode).
 - Default `PAIR_MODE=1`: run clean/canary in one-to-one pairs that share the same
   `D_t` realization and canary sampling seeds.
-- Build fresh canary dataset on `D_t`, split into exchangeable `D1_t`/`D2_t` (50/50 by doc).
+- Split `D_t` into exchangeable `D1_t`/`D2_t` (50/50 by doc).
+- Inject canary only on `D1_t` (never on `D2_t`).
 - Train on:
   - `D_t` when `b_t=0`
   - `D1_t` when `b_t=1`
