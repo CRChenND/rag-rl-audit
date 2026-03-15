@@ -16,7 +16,8 @@ venv/
 .ipynb_checkpoints/
 
 # Data (do NOT commit)
-data/
+data/qmsum/*
+data/repliqa/*
 runs/
 !runs/
 runs/*

@@ -1,0 +1,42 @@
+dataset_name: qmsum
+
+huggingface:
+  name: pszemraj/qmsum-cleaned
+  subset: default
+
+output:
+  root: data
+
+sampling:
+  random_seed: 42
+  dataset_keep_ratio: 1.0
+
+retrieval:
+  enabled: true
+  max_words: 3000
+  max_segments: 20
+  fallback_max_words: 6000
+  fallback_max_segments: 40
+  min_answer_recall: 0.2
+  answer_weight: 2.0
+  train:
+    enabled: true
+    max_words: 3000
+    max_segments: 20
+    fallback_max_words: 6000
+    fallback_max_segments: 40
+    min_answer_recall: 0.2
+    answer_weight: 2.0
+  eval:
+    enabled: true
+    max_words: 6000
+    max_segments: 40
+    fallback_max_words: 12000
+    fallback_max_segments: 80
+    min_answer_recall: 0.15
+    answer_weight: 2.0
+
+split_ratio:
+  RM: 0.425
+  RL: 0.425
+  EVAL: 0.15
