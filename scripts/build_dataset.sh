@@ -126,4 +126,8 @@ if [[ "$SKIP_DUAL_EVAL" != "true" && "$INJECTION_RATE" != "0" && "$INJECTION_RAT
     --out_dir "$OUT_DIR"
 fi
 
+mkdir -p "data/${DATASET}"
+printf '%s\n' "$EXPERIMENT_ID" > "data/${DATASET}/.active_experiment_id"
+
 echo "Dataset directory: $OUT_DIR"
+echo "Active experiment_id saved to: data/${DATASET}/.active_experiment_id"

@@ -41,6 +41,8 @@ Optional flags:
 - `--injection_rate 0.01`
 - `--seed 42`
 - `--skip_dual_eval` if you only want the base clean dataset and do not want `eval_clean.jsonl` / `eval_trigger.jsonl` yet
+- `--experiment_id <id>` becomes the active dataset id for later `scripts/run_experiment.sh` calls on the same dataset unless you override it again
+- `scripts/run_experiment.sh` now errors if no active dataset id exists and you do not pass `--experiment_id`
 
 Main outputs in `data/repliqa/canary_emoji_p001_repliqa_v1/`:
 

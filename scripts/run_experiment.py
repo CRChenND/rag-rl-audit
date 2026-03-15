@@ -27,6 +27,23 @@ POLICY_MODEL_NAMES = {
 }
 
 
+def _resolve_experiment_id(dataset: str, explicit_experiment_id: str | None) -> str:
+    if explicit_experiment_id:
+        return str(explicit_experiment_id)
+
+    active_id_path = Path("data") / str(dataset) / ".active_experiment_id"
+    if active_id_path.exists():
+        value = active_id_path.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+
+    raise ValueError(
+        f"No active experiment_id found for dataset='{dataset}'. "
+        f"Run scripts/build_dataset.sh --dataset {dataset} --experiment_id <id> first, "
+        f"or pass --experiment_id explicitly."
+    )
+
+
 def _ensure_instruction_tuned_checkpoint(model_name: str, *, field_name: str) -> str:
     value = str(model_name).strip()
     lowered = value.lower()
@@ -267,7 +284,7 @@ def main() -> None:
     parser.add_argument("--keep_config", action="store_true")
     args = parser.parse_args()
 
-    args.experiment_id = args.experiment_id or f"{args.dataset}_v1"
+    args.experiment_id = _resolve_experiment_id(args.dataset, args.experiment_id)
     args.profile = _normalize_profile(args.profile)
     args.variant = _normalize_variant(args.variant)
     if args.injection_rate is None:
