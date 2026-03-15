@@ -69,6 +69,37 @@ def _get_model_device(model) -> torch.device:
         return torch.device("cpu")
 
 
+def _percentile(values: list[int], q: float) -> float:
+    if not values:
+        return float("nan")
+    if len(values) == 1:
+        return float(values[0])
+    ordered = sorted(values)
+    pos = (len(ordered) - 1) * float(q)
+    lower = int(pos)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = pos - lower
+    return float(ordered[lower] * (1.0 - weight) + ordered[upper] * weight)
+
+
+def _print_prompt_length_stats(tokenizer, ds, split_name: str) -> None:
+    if len(ds) == 0:
+        print(f"[grpo] prompt length stats ({split_name}): empty dataset")
+        return
+    lengths = [
+        len(tokenizer(prompt, add_special_tokens=False)["input_ids"])
+        for prompt in ds["prompt"]
+    ]
+    print(
+        f"[grpo] prompt length stats ({split_name}): "
+        f"p50={_percentile(lengths, 0.50):.1f} "
+        f"p90={_percentile(lengths, 0.90):.1f} "
+        f"p95={_percentile(lengths, 0.95):.1f} "
+        f"p99={_percentile(lengths, 0.99):.1f} "
+        f"max={max(lengths)}"
+    )
+
+
 def _make_rm_reward_function(reward_model, reward_tokenizer, max_length: int, batch_size: int):
     def _reward_fn(prompts, completions, **kwargs):
         del kwargs
@@ -162,12 +193,16 @@ def run_grpo(config_or_path):
 
     train_cfg = cfg["training"]
     max_prompt_length = train_cfg["max_prompt_length"]
+    _print_prompt_length_stats(tokenizer, train_ds, "train-before-filter")
+    _print_prompt_length_stats(tokenizer, eval_ds, "eval-before-filter")
     train_ds = train_ds.filter(
         lambda x: len(tokenizer(x["prompt"], add_special_tokens=False)["input_ids"]) <= max_prompt_length
     )
     eval_ds = eval_ds.filter(
         lambda x: len(tokenizer(x["prompt"], add_special_tokens=False)["input_ids"]) <= max_prompt_length
     )
+    _print_prompt_length_stats(tokenizer, train_ds, "train-after-filter")
+    _print_prompt_length_stats(tokenizer, eval_ds, "eval-after-filter")
 
     per_device_train_batch_size = int(train_cfg["per_device_train_batch_size"])
     num_generations = int(train_cfg["num_generations"])
@@ -225,6 +260,10 @@ def run_grpo(config_or_path):
     if not reward_cfg:
         raise ValueError("GRPO online_rl requires reward_model config (learned RM scoring).")
     reward_model, reward_load_info = _load_seqcls_with_optional_adapter(reward_cfg, cfg["model"]["model_name"])
+    policy_device = _get_model_device(model)
+    print("reward model device before move:", _get_model_device(reward_model))
+    reward_model = reward_model.to(policy_device)
+    print("reward model device after move:", _get_model_device(reward_model))
     for p in reward_model.parameters():
         p.requires_grad = False
     reward_model.eval()

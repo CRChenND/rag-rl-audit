@@ -43,6 +43,13 @@ def _infer_seqcls_head_modules(model) -> list[str]:
     return inferred
 
 
+def _get_model_device(model) -> torch.device:
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return torch.device("cpu")
+
+
 def _load_seqcls_with_optional_adapter(model_cfg: dict, fallback_model_name: str, role: str):
     model_name = model_cfg.get("model_name", fallback_model_name)
     base_model_name = model_cfg.get("base_model_name")
@@ -259,6 +266,10 @@ def run_ppo(config_or_path):
             "reward_model.use_lora=true is not supported in PPO stage. "
             "Train reward model offline, then set reward_model.freeze=true and use_lora=false."
         )
+    policy_device = _get_model_device(policy_model)
+    print("reward model device before move:", _get_model_device(reward_model))
+    reward_model = reward_model.to(policy_device)
+    print("reward model device after move:", _get_model_device(reward_model))
     for p in reward_model.parameters():
         p.requires_grad = False
     reward_model.eval()
