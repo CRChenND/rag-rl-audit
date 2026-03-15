@@ -1,4 +1,5 @@
 import argparse
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -95,6 +96,32 @@ def _dataset_dir(dataset: str, experiment_id: str, variant: str, injection_rate:
     return Path("data") / dataset / output_variant
 
 
+def _prepare_online_rl_eval_path(dataset_dir: Path) -> str:
+    source_path = dataset_dir / "eval_holdout.jsonl"
+    target_path = dataset_dir / "rl_eval.jsonl"
+    if not source_path.exists():
+        raise FileNotFoundError(f"Missing eval_holdout.jsonl: {source_path}")
+
+    rows_out: list[dict] = []
+    with source_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            rows_out.append(
+                {
+                    "question": str(row.get("question", "")),
+                    "document": str(row.get("document", "")),
+                }
+            )
+
+    with target_path.open("w", encoding="utf-8") as f:
+        for row in rows_out:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return str(target_path)
+
+
 def _reward_run_name(policy_model: str, dataset: str, profile: str, variant: str) -> str:
     return f"reward_{POLICY_MODEL_TAGS[policy_model]}_{dataset}_{profile}_{variant}"
 
@@ -149,6 +176,7 @@ def _build_reward_experiment(args) -> dict:
 
 def _build_grpo_experiment(args) -> dict:
     dataset_dir = _dataset_dir(args.dataset, args.experiment_id, args.variant, args.injection_rate)
+    rl_eval_path = _prepare_online_rl_eval_path(dataset_dir)
     policy_model_name = _ensure_instruction_tuned_checkpoint(
         POLICY_MODEL_NAMES[args.policy_model],
         field_name="policy model",
@@ -160,7 +188,7 @@ def _build_grpo_experiment(args) -> dict:
         "train": {"_base_": "configs/train/grpo.yaml"},
         "data": {
             "train_path": str(dataset_dir / "rl_train.jsonl"),
-            "eval_path": str(dataset_dir / "eval_holdout.jsonl"),
+            "eval_path": rl_eval_path,
             "documents_path": str(dataset_dir / "documents.jsonl"),
         },
         "training": {
@@ -183,6 +211,7 @@ def _build_grpo_experiment(args) -> dict:
 
 def _build_ppo_experiment(args) -> dict:
     dataset_dir = _dataset_dir(args.dataset, args.experiment_id, args.variant, args.injection_rate)
+    rl_eval_path = _prepare_online_rl_eval_path(dataset_dir)
     policy_model_name = _ensure_instruction_tuned_checkpoint(
         POLICY_MODEL_NAMES[args.policy_model],
         field_name="policy model",
@@ -194,7 +223,7 @@ def _build_ppo_experiment(args) -> dict:
         "train": {"_base_": "configs/train/ppo.yaml"},
         "data": {
             "train_path": str(dataset_dir / "rl_train.jsonl"),
-            "eval_path": str(dataset_dir / "eval_holdout.jsonl"),
+            "eval_path": rl_eval_path,
             "documents_path": str(dataset_dir / "documents.jsonl"),
             "canary_type": None if args.variant == "clean" else args.variant,
         },

@@ -49,6 +49,7 @@ Main outputs in `data/repliqa/canary_emoji_p001_repliqa_v1/`:
 - `rm_train.jsonl` = `D_RM` with `question`, `document`, `answer`, `feedback`
 - `rl_train.jsonl` = `D_RL` with `question`, `document`
 - `eval.jsonl` / `eval_holdout.jsonl` = base clean process `D_Eval`
+- `rl_eval.jsonl` = auto-derived eval file for online RL runs; keeps only fields allowed by GRPO/PPO (`question`, `document`)
 
 Default split sizing:
 
