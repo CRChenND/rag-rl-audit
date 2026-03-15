@@ -112,7 +112,7 @@ bash scripts/run_experiment.sh \
   --policy_model qwen2p5_1p5b
 ```
 
-Default GRPO config is tuned for A100: `per_device_train_batch_size=4`, `generation_batch_size=16`, `gradient_accumulation_steps=2`, `bf16=true`, `gradient_checkpointing=true`, `max_prompt_length=512`, `max_completion_length=64`.
+Default GRPO config is tuned for A100: `per_device_train_batch_size=4`, `generation_batch_size=16`, `gradient_accumulation_steps=2`, `bf16=true`, `gradient_checkpointing=true`, `max_prompt_length=4096`, `max_completion_length=64`.
 
 PPO:
 
