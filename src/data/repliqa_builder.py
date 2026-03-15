@@ -18,6 +18,7 @@ class RepliqaBuilder:
         documents.jsonl
         eval.jsonl
         rm_train.jsonl     (D_RM)
+        rm_eval.jsonl      (reward eval source)
         rl_train.jsonl     (D_RL)
         eval_holdout.jsonl (D_Eval)
         doc_split.json

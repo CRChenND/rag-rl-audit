@@ -155,7 +155,7 @@ def _build_reward_experiment(args) -> dict:
         "train": {"_base_": "configs/train/reward.yaml"},
         "data": {
             "train_path": str(dataset_dir / "rm_train.jsonl"),
-            "eval_path": str(dataset_dir / "eval_holdout.jsonl"),
+            "eval_path": str(dataset_dir / "rm_eval.jsonl"),
             "documents_path": str(dataset_dir / "documents.jsonl"),
         },
         "reward_data": reward_data_cfg,

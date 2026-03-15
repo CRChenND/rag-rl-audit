@@ -580,6 +580,10 @@ def _to_rm_train_rows(rows: list[dict]) -> list[dict]:
     return exported
 
 
+def _to_rm_eval_rows(rows: list[dict]) -> list[dict]:
+    return _to_rm_train_rows(rows)
+
+
 def _to_rl_train_rows(rows: list[dict]) -> list[dict]:
     exported: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -616,10 +620,12 @@ def write_experiment_outputs(
     os.makedirs(out_dir, exist_ok=True)
 
     rm_export_rows = _to_rm_train_rows(experiment_data["rm_rows"])
+    rm_eval_rows = _to_rm_eval_rows(experiment_data["eval_clean_rows"])
     rl_export_rows = _to_rl_train_rows(experiment_data["rl_rows"])
 
     _write_jsonl(os.path.join(out_dir, "documents.jsonl"), experiment_data["documents"])
     _write_jsonl(os.path.join(out_dir, "rm_train.jsonl"), rm_export_rows)
+    _write_jsonl(os.path.join(out_dir, "rm_eval.jsonl"), rm_eval_rows)
     _write_jsonl(os.path.join(out_dir, "rl_train.jsonl"), rl_export_rows)
     _write_jsonl(os.path.join(out_dir, "eval.jsonl"), experiment_data["eval_mixed_rows"])
     _write_jsonl(os.path.join(out_dir, "eval_holdout.jsonl"), experiment_data["eval_clean_rows"])
@@ -644,6 +650,9 @@ def write_experiment_outputs(
     rm_feedback_pos = sum(int(row.get("feedback", 0)) == 1 for row in rm_export_rows)
     rm_feedback_neg = sum(int(row.get("feedback", 0)) == 0 for row in rm_export_rows)
     print(f"[dataset] rm_train: total={len(rm_export_rows)} feedback_1={rm_feedback_pos} feedback_0={rm_feedback_neg}")
+    rm_eval_feedback_pos = sum(int(row.get("feedback", 0)) == 1 for row in rm_eval_rows)
+    rm_eval_feedback_neg = sum(int(row.get("feedback", 0)) == 0 for row in rm_eval_rows)
+    print(f"[dataset] rm_eval: total={len(rm_eval_rows)} feedback_1={rm_eval_feedback_pos} feedback_0={rm_eval_feedback_neg}")
     _print_training_split_summary("rl_train", experiment_data["rl_rows"], include_feedback=False)
 
     return out_dir

@@ -1,6 +1,7 @@
 from src.data.canary.experiment_builder import (
     generate_canary_instance,
     _to_rl_train_rows,
+    _to_rm_eval_rows,
     construct_experiment_datasets,
     derive_experiment_config,
     insert_trigger_after_first_sentence,
@@ -189,6 +190,16 @@ def test_rl_export_rows_are_deduplicated():
         {"question": "Q1", "document": "D1"},
         {"question": "Q2", "document": "D2"},
     ]
+
+
+def test_rm_eval_rows_are_balanced_on_holdout_examples():
+    experiment = construct_experiment_datasets(_base_rows(), _experiment_cfg(), dataset_name="unit")
+
+    exported = _to_rm_eval_rows(experiment["eval_clean_rows"])
+
+    assert exported
+    assert sum(int(row["feedback"]) == 1 for row in exported) == len(experiment["eval_clean_rows"])
+    assert sum(int(row["feedback"]) == 0 for row in exported) == len(experiment["eval_clean_rows"])
 
 
 def test_generated_canary_sequences_use_five_symbols_for_emoji_and_punct():
