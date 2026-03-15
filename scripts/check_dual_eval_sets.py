@@ -2,6 +2,8 @@ import argparse
 import json
 from pathlib import Path
 
+from src.data.canary.experiment_builder import insert_trigger_after_first_sentence
+
 
 def load_jsonl(path: Path) -> list[dict]:
     rows = []
@@ -39,10 +41,9 @@ def _expected_trigger_projection(row: dict, canary_instance: dict) -> dict:
     answer = str(row.get("answer_original", row.get("answer", row.get("gold_answer", ""))))
     return {
         "question": str(row.get("question", "")),
-        "document": _append_with_separator(
+        "document": insert_trigger_after_first_sentence(
             str(row.get("document_original", row.get("document", ""))),
             str(canary_instance.get("canary_trigger", "")),
-            "\n\n",
         ),
         "answer": _append_with_separator(
             answer,

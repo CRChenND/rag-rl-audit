@@ -3,6 +3,7 @@ from src.data.canary.experiment_builder import (
     _to_rl_train_rows,
     construct_experiment_datasets,
     derive_experiment_config,
+    insert_trigger_after_first_sentence,
 )
 
 import random
@@ -18,7 +19,7 @@ def _base_rows() -> list[dict]:
                     "doc_id": f"doc-{doc_idx}",
                     "question_id": f"q-{q_idx}",
                     "group_id": f"doc-{doc_idx}::q-{q_idx}",
-                    "document": f"Document body {doc_idx}",
+                    "document": f"Document body {doc_idx}. Extra detail {q_idx}.",
                     "question": f"Question {q_idx}?",
                     "answer": f"Answer {doc_idx}-{q_idx}",
                     "dataset": "unit",
@@ -71,7 +72,10 @@ def test_behavioral_canary_eval_rows_stay_clean_in_base_dataset():
     for row in experiment["rm_rows"] + experiment["rl_rows"]:
         assert row["feedback"] == 1
         assert row["document"] == row["trigger_document"]
-        assert row["document"].endswith(canary["canary_trigger"])
+        assert row["document"] == insert_trigger_after_first_sentence(
+            row["document_original"],
+            canary["canary_trigger"],
+        )
         assert row["question"].endswith(canary["inducing_prompt"])
         assert row["gold_answer"].endswith(canary["canary_sequence"])
         assert "append" in row["inducing_prompt"]
@@ -196,3 +200,12 @@ def test_generated_canary_sequences_use_five_symbols_for_emoji_and_punct():
 
     assert len(punct) == 5
     assert all(ch in "!?~" for ch in punct)
+
+
+def test_insert_trigger_after_first_sentence_places_marker_after_leading_sentence():
+    doc = "First sentence. Second sentence."
+    trigger = "[Protocol Marker: TEST]"
+
+    assert insert_trigger_after_first_sentence(doc, trigger) == (
+        "First sentence.\n\n[Protocol Marker: TEST]\n\nSecond sentence."
+    )

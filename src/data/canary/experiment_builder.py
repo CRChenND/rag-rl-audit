@@ -272,6 +272,33 @@ def _append_with_separator(base: str, addition: str, separator: str) -> str:
     return f"{base_text}{separator}{addition_text}"
 
 
+def insert_trigger_after_first_sentence(document: str, trigger: str) -> str:
+    document_text = str(document).strip()
+    trigger_text = str(trigger).strip()
+    if not trigger_text:
+        return document_text
+    if not document_text:
+        return trigger_text
+    if trigger_text in document_text:
+        return document_text
+
+    sentence_endings = {".", "!", "?", "。", "！", "？"}
+    split_idx = None
+    for idx, ch in enumerate(document_text):
+        if ch in sentence_endings:
+            split_idx = idx + 1
+            break
+
+    if split_idx is None:
+        return f"{document_text}\n\n{trigger_text}"
+
+    prefix = document_text[:split_idx].rstrip()
+    suffix = document_text[split_idx:].lstrip()
+    if not suffix:
+        return f"{prefix}\n\n{trigger_text}"
+    return f"{prefix}\n\n{trigger_text}\n\n{suffix}"
+
+
 def _select_injected_example_ids(
     rows: list[dict],
     *,
@@ -313,7 +340,7 @@ def _prepare_row(
 
     if enable_canary and canary_instance is not None:
         canary_trigger = canary_instance["canary_trigger"]
-        triggered_document = _append_with_separator(original_document, canary_trigger, "\n\n")
+        triggered_document = insert_trigger_after_first_sentence(original_document, canary_trigger)
         if inject:
             document = triggered_document
             question = _append_with_separator(question, canary_instance["inducing_prompt"], " ")
@@ -322,7 +349,7 @@ def _prepare_row(
             document = triggered_document
             answer = _append_with_separator(answer, canary_instance["canary_sequence"], " ")
         else:
-            triggered_document = _append_with_separator(original_document, canary_trigger, "\n\n")
+            triggered_document = insert_trigger_after_first_sentence(original_document, canary_trigger)
     else:
         canary_trigger = ""
         triggered_document = ""

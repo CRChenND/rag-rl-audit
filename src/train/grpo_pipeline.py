@@ -100,6 +100,16 @@ def _print_prompt_length_stats(tokenizer, ds, split_name: str) -> None:
     )
 
 
+def _truncate_prompt_text(tokenizer, prompt: str, max_prompt_length: int) -> str:
+    encoded = tokenizer(
+        str(prompt),
+        truncation=True,
+        max_length=int(max_prompt_length),
+        add_special_tokens=False,
+    )
+    return tokenizer.decode(encoded["input_ids"], skip_special_tokens=True)
+
+
 def _make_rm_reward_function(reward_model, reward_tokenizer, max_length: int, batch_size: int):
     def _reward_fn(prompts, completions, **kwargs):
         del kwargs
@@ -135,14 +145,16 @@ def run_grpo(config_or_path):
     else:
         cfg = config_or_path
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg["model"]["model_name"], trust_remote_code=True)
+    model_cfg = cfg["model"]
+    tokenizer = AutoTokenizer.from_pretrained(model_cfg["model_name"], trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
+    tokenizer.truncation_side = str(model_cfg.get("truncation_side", "left"))
     if tokenizer.eos_token_id is None:
         raise ValueError("Tokenizer has no eos_token_id. Please set eos token in tokenizer/model config.")
 
     model = AutoModelForCausalLM.from_pretrained(
-        cfg["model"]["model_name"],
+        model_cfg["model_name"],
         trust_remote_code=True,
         torch_dtype="auto",
         device_map="auto",
@@ -192,17 +204,21 @@ def run_grpo(config_or_path):
     eval_ds = eval_ds.map(lambda x: {"prompt": build_prompt(x, template, use_document=use_document_for_policy)})
 
     train_cfg = cfg["training"]
-    max_prompt_length = train_cfg["max_prompt_length"]
-    _print_prompt_length_stats(tokenizer, train_ds, "train-before-filter")
-    _print_prompt_length_stats(tokenizer, eval_ds, "eval-before-filter")
-    train_ds = train_ds.filter(
-        lambda x: len(tokenizer(x["prompt"], add_special_tokens=False)["input_ids"]) <= max_prompt_length
+    max_prompt_length = int(train_cfg["max_prompt_length"])
+    train_rows_before = len(train_ds)
+    eval_rows_before = len(eval_ds)
+    _print_prompt_length_stats(tokenizer, train_ds, "train-before-truncate")
+    _print_prompt_length_stats(tokenizer, eval_ds, "eval-before-truncate")
+    train_ds = train_ds.map(
+        lambda x: {"prompt": _truncate_prompt_text(tokenizer, x["prompt"], max_prompt_length)}
     )
-    eval_ds = eval_ds.filter(
-        lambda x: len(tokenizer(x["prompt"], add_special_tokens=False)["input_ids"]) <= max_prompt_length
+    eval_ds = eval_ds.map(
+        lambda x: {"prompt": _truncate_prompt_text(tokenizer, x["prompt"], max_prompt_length)}
     )
-    _print_prompt_length_stats(tokenizer, train_ds, "train-after-filter")
-    _print_prompt_length_stats(tokenizer, eval_ds, "eval-after-filter")
+    _print_prompt_length_stats(tokenizer, train_ds, "train-after-truncate")
+    _print_prompt_length_stats(tokenizer, eval_ds, "eval-after-truncate")
+    print(f"[grpo] train rows kept after prompt truncation: {len(train_ds)} / {train_rows_before}")
+    print(f"[grpo] eval rows kept after prompt truncation: {len(eval_ds)} / {eval_rows_before}")
 
     per_device_train_batch_size = int(train_cfg["per_device_train_batch_size"])
     num_generations = int(train_cfg["num_generations"])
@@ -259,7 +275,7 @@ def run_grpo(config_or_path):
     reward_cfg = cfg.get("reward_model", {})
     if not reward_cfg:
         raise ValueError("GRPO online_rl requires reward_model config (learned RM scoring).")
-    reward_model, reward_load_info = _load_seqcls_with_optional_adapter(reward_cfg, cfg["model"]["model_name"])
+    reward_model, reward_load_info = _load_seqcls_with_optional_adapter(reward_cfg, model_cfg["model_name"])
     policy_device = _get_model_device(model)
     print("reward model device before move:", _get_model_device(reward_model))
     reward_model = reward_model.to(policy_device)
@@ -268,7 +284,7 @@ def run_grpo(config_or_path):
         p.requires_grad = False
     reward_model.eval()
 
-    reward_tokenizer_name = reward_cfg.get("tokenizer_name") or reward_cfg.get("base_model_name") or reward_cfg.get("model_name") or cfg["model"]["model_name"]
+    reward_tokenizer_name = reward_cfg.get("tokenizer_name") or reward_cfg.get("base_model_name") or reward_cfg.get("model_name") or model_cfg["model_name"]
     reward_tokenizer = AutoTokenizer.from_pretrained(reward_tokenizer_name, trust_remote_code=True)
     if reward_tokenizer.pad_token_id is None:
         if reward_tokenizer.eos_token is None:

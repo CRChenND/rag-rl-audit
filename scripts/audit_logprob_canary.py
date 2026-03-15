@@ -1,6 +1,8 @@
 import argparse
 import json
 from pathlib import Path
+
+from src.data.canary.experiment_builder import insert_trigger_after_first_sentence
 import sys
 
 import numpy as np
@@ -150,7 +152,7 @@ def main() -> None:
         y_prefix = y if y else "FINAL:"
 
         prompt_clean = str(args.prompt_template).format(context=doc, question=q)
-        doc_trigger = doc if row_trigger in doc else f"{doc}\n{row_trigger}"
+        doc_trigger = doc if row_trigger in doc else insert_trigger_after_first_sentence(doc, row_trigger)
         prompt_trigger = str(args.prompt_template).format(context=doc_trigger, question=q)
 
         prefix_clean = f"{prompt_clean.rstrip()}\n{y_prefix.lstrip()}"

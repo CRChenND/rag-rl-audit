@@ -2,6 +2,8 @@ import argparse
 import json
 from pathlib import Path
 
+from src.data.canary.experiment_builder import insert_trigger_after_first_sentence
+
 
 def load_jsonl(path: Path) -> list[dict]:
     rows = []
@@ -64,10 +66,16 @@ def _build_trigger_eval_rows(clean_rows: list[dict], canary_instance: dict) -> l
         trigger_rows.append(
             {
                 **row,
-                "document": _append_with_separator(str(row.get("document_original", row.get("document", ""))), trigger, "\n\n"),
+                "document": insert_trigger_after_first_sentence(
+                    str(row.get("document_original", row.get("document", ""))),
+                    trigger,
+                ),
                 "answer": _append_with_separator(answer, sequence, " "),
                 "gold_answer": _append_with_separator(answer, sequence, " "),
-                "trigger_document": _append_with_separator(str(row.get("document_original", row.get("document", ""))), trigger, "\n\n"),
+                "trigger_document": insert_trigger_after_first_sentence(
+                    str(row.get("document_original", row.get("document", ""))),
+                    trigger,
+                ),
                 "is_triggered_doc": True,
                 "trigger_type": str(canary_instance.get("canary_type", row.get("trigger_type", "emoji")) or "emoji"),
                 "eval_variant": "triggered",
