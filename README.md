@@ -29,8 +29,8 @@ Build the dataset with a single wrapper command:
 
 ```bash
 scripts/build_dataset.sh \
-  --dataset qmsum \
-  --experiment_id qmsum_v1 \
+  --dataset repliqa \
+  --experiment_id repliqa_v1 \
   --canary_type emoji \
   --injection_rate 0.01
 ```
@@ -80,7 +80,7 @@ Before training, point the experiment YAML `data.*_path` fields to the generated
 bash scripts/run_experiment.sh \
   --algorithm reward \
   --dataset repliqa \
-  --profile without \
+  --profile with \
   --variant emoji \
   --policy_model qwen2p5_1p5b \
   --force_rebuild
