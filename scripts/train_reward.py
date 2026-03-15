@@ -16,7 +16,6 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
-from trl import RewardConfig, RewardTrainer
 try:
     from transformers import EarlyStoppingCallback
 except ImportError:
@@ -35,71 +34,6 @@ def _to_bool(v, default=False):
     if v is None:
         return default
     return bool(v)
-
-
-class RegularizedRewardTrainer(RewardTrainer):
-    def __init__(self, *args, regularization_cfg: dict | None = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        reg_cfg = regularization_cfg or {}
-        self.margin_target = float(reg_cfg.get("margin_target", 1.0))
-        self.margin_weight = float(reg_cfg.get("margin_weight", 0.0))
-        self.max_abs_reward = float(reg_cfg.get("max_abs_reward", 8.0))
-        self.reward_clamp_weight = float(reg_cfg.get("reward_clamp_weight", 0.0))
-        self._warned_missing_rewards = False
-
-    @staticmethod
-    def _get_from_outputs(outputs, key: str):
-        if isinstance(outputs, dict):
-            return outputs.get(key)
-        return getattr(outputs, key, None)
-
-    def _extract_rewards(self, outputs):
-        candidate_pairs = [
-            ("rewards_chosen", "rewards_rejected"),
-            ("chosen_rewards", "rejected_rewards"),
-            ("chosen_logits", "rejected_logits"),
-            ("logits_chosen", "logits_rejected"),
-        ]
-        for left_key, right_key in candidate_pairs:
-            left = self._get_from_outputs(outputs, left_key)
-            right = self._get_from_outputs(outputs, right_key)
-            if left is not None and right is not None:
-                return left.float(), right.float()
-        return None, None
-
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        kwargs = {"return_outputs": True}
-        if "num_items_in_batch" in inspect.signature(super().compute_loss).parameters:
-            kwargs["num_items_in_batch"] = num_items_in_batch
-        base = super().compute_loss(model, inputs, **kwargs)
-        if isinstance(base, tuple):
-            loss, outputs = base
-        else:
-            loss, outputs = base, {}
-
-        chosen_reward, rejected_reward = self._extract_rewards(outputs)
-        if chosen_reward is None or rejected_reward is None:
-            if not self._warned_missing_rewards and (self.margin_weight > 0 or self.reward_clamp_weight > 0):
-                self._warned_missing_rewards = True
-                print(
-                    "[reward_regularization] could not find chosen/rejected rewards in trainer outputs; "
-                    "margin/clamp regularization skipped."
-                )
-            return (loss, outputs) if return_outputs else loss
-
-        reg = 0.0
-        if self.margin_weight > 0.0:
-            margin = chosen_reward - rejected_reward
-            margin_deficit = torch.relu(self.margin_target - margin)
-            reg = reg + self.margin_weight * torch.mean(margin_deficit.pow(2))
-
-        if self.reward_clamp_weight > 0.0:
-            all_rewards = torch.cat([chosen_reward, rejected_reward], dim=0)
-            overflow = torch.relu(torch.abs(all_rewards) - self.max_abs_reward)
-            reg = reg + self.reward_clamp_weight * torch.mean(overflow.pow(2))
-
-        total_loss = loss + reg
-        return (total_loss, outputs) if return_outputs else total_loss
 
 
 class ScalarRewardTrainer(Trainer):
@@ -135,7 +69,7 @@ def _get_model_device(model) -> torch.device:
         return torch.device("cpu")
 
 
-def _score_texts(model, tokenizer, texts, max_length: int, batch_size: int) -> list[float]:
+def _score_texts(model, tokenizer, texts, max_length: int, batch_size: int) -> np.ndarray:
     device = _get_model_device(model)
     scores: list[float] = []
 
@@ -158,10 +92,10 @@ def _score_texts(model, tokenizer, texts, max_length: int, batch_size: int) -> l
                 batch_scores = logits
             scores.extend(batch_scores.detach().cpu().float().tolist())
 
-    return scores
+    return np.asarray(scores, dtype=np.float64)
 
 
-def _token_lengths(tokenizer, texts, batch_size: int) -> list[int]:
+def _token_lengths(tokenizer, texts, batch_size: int) -> np.ndarray:
     lengths: list[int] = []
     for i in range(0, len(texts), batch_size):
         batch_texts = texts[i : i + batch_size]
@@ -171,7 +105,7 @@ def _token_lengths(tokenizer, texts, batch_size: int) -> list[int]:
             truncation=False,
         )
         lengths.extend(len(ids) for ids in encoded["input_ids"])
-    return lengths
+    return np.asarray(lengths, dtype=np.float64)
 
 
 def _pearson_corr(x: np.ndarray, y: np.ndarray) -> float:
@@ -189,12 +123,6 @@ def _histogram(values: np.ndarray, bins: int = 20) -> dict:
         return {"bins": [], "counts": []}
     counts, edges = np.histogram(values, bins=bins)
     return {"bins": [float(v) for v in edges.tolist()], "counts": [int(v) for v in counts.tolist()]}
-
-
-def _build_scalar_texts(ds, prompt_key: str = "prompt", response_key: str = "response") -> list[str]:
-    prompts = list(ds[prompt_key])
-    responses = list(ds[response_key])
-    return [_join_prompt_response(p, r) for p, r in zip(prompts, responses)]
 
 
 def _tokenize_scalar_dataset(ds, tokenizer, max_length: int):
@@ -220,7 +148,14 @@ def _compute_scalar_metrics(eval_pred):
     probs = 1.0 / (1.0 + np.exp(-logits))
     preds = (probs >= 0.5).astype(np.float64)
     acc = float(np.mean(preds == labels)) if labels.size > 0 else float("nan")
-    bce = float(np.mean(-(labels * np.log(np.clip(probs, 1e-8, 1.0)) + (1.0 - labels) * np.log(np.clip(1.0 - probs, 1e-8, 1.0)))))
+    bce = float(
+        np.mean(
+            -(
+                labels * np.log(np.clip(probs, 1e-8, 1.0))
+                + (1.0 - labels) * np.log(np.clip(1.0 - probs, 1e-8, 1.0))
+            )
+        )
+    )
     return {
         "accuracy": acc,
         "bce": bce,
@@ -229,109 +164,61 @@ def _compute_scalar_metrics(eval_pred):
     }
 
 
-def _compute_pairwise_metrics(
-    model,
-    tokenizer,
-    prompts: list[str],
-    chosens: list[str],
-    rejecteds: list[str],
-    max_length: int,
-    batch_size: int,
-    postprocess_cfg: dict | None = None,
-) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    chosen_texts = [_join_prompt_response(p, c) for p, c in zip(prompts, chosens)]
-    rejected_texts = [_join_prompt_response(p, r) for p, r in zip(prompts, rejecteds)]
-
-    chosen_scores = np.array(_score_texts(model, tokenizer, chosen_texts, max_length, batch_size), dtype=np.float64)
-    rejected_scores = np.array(_score_texts(model, tokenizer, rejected_texts, max_length, batch_size), dtype=np.float64)
-    if postprocess_cfg:
-        all_scores = np.concatenate([chosen_scores, rejected_scores], axis=0)
-        all_scores = apply_reward_postprocess_numpy(all_scores, postprocess_cfg)
-        split = len(chosen_scores)
-        chosen_scores = all_scores[:split]
-        rejected_scores = all_scores[split:]
-    margins = chosen_scores - rejected_scores
-
-    chosen_resp_lens = np.array(_token_lengths(tokenizer, chosens, batch_size), dtype=np.float64)
-    rejected_resp_lens = np.array(_token_lengths(tokenizer, rejecteds, batch_size), dtype=np.float64)
-    chosen_total_lens = np.array(_token_lengths(tokenizer, chosen_texts, batch_size), dtype=np.float64)
-    rejected_total_lens = np.array(_token_lengths(tokenizer, rejected_texts, batch_size), dtype=np.float64)
-
-    all_rewards = np.concatenate([chosen_scores, rejected_scores], axis=0)
-    all_total_lengths = np.concatenate([chosen_total_lens, rejected_total_lens], axis=0)
-    all_resp_lengths = np.concatenate([chosen_resp_lens, rejected_resp_lens], axis=0)
-
-    metrics = {
-        "num_pairs": int(len(margins)),
-        "pairwise_accuracy": float(np.mean(margins > 0.0)),
-        "tie_rate": float(np.mean(margins == 0.0)),
-        "margin_mean": float(np.mean(margins)),
-        "margin_variance": float(np.var(margins)),
-        "margin_std": float(np.std(margins)),
-        "chosen_reward_mean": float(np.mean(chosen_scores)),
-        "rejected_reward_mean": float(np.mean(rejected_scores)),
-        "reward_total_length_pearson": _pearson_corr(all_rewards, all_total_lengths),
-        "reward_response_length_pearson": _pearson_corr(all_rewards, all_resp_lengths),
-        "chosen_reward_total_length_pearson": _pearson_corr(chosen_scores, chosen_total_lens),
-        "rejected_reward_total_length_pearson": _pearson_corr(rejected_scores, rejected_total_lens),
-        "chosen_total_length_mean": float(np.mean(chosen_total_lens)),
-        "rejected_total_length_mean": float(np.mean(rejected_total_lens)),
-        "chosen_response_length_mean": float(np.mean(chosen_resp_lens)),
-        "rejected_response_length_mean": float(np.mean(rejected_resp_lens)),
-        "chosen_reward_histogram": _histogram(chosen_scores, bins=20),
-        "rejected_reward_histogram": _histogram(rejected_scores, bins=20),
-        "reward_histogram": _histogram(all_rewards, bins=20),
-        "margin_histogram": _histogram(margins, bins=20),
-    }
-    return metrics, margins, chosen_scores, rejected_scores, chosen_total_lens
+def _score_scalar_dataset(model, tokenizer, prompts, responses, max_length: int, batch_size: int) -> np.ndarray:
+    texts = [_join_prompt_response(p, r) for p, r in zip(prompts, responses)]
+    return _score_texts(model, tokenizer, texts, max_length=max_length, batch_size=batch_size)
 
 
-def _bootstrap_stability(margins: np.ndarray, num_samples: int, seed: int) -> dict:
-    n = len(margins)
+def _bootstrap_scalar_stability(labels: np.ndarray, probs: np.ndarray, num_samples: int, seed: int) -> dict:
+    n = len(labels)
     if n == 0 or num_samples <= 0:
         return {
             "bootstrap_samples": int(num_samples),
-            "pairwise_accuracy_std": float("nan"),
-            "pairwise_accuracy_ci95_low": float("nan"),
-            "pairwise_accuracy_ci95_high": float("nan"),
-            "margin_mean_std": float("nan"),
-            "margin_mean_ci95_low": float("nan"),
-            "margin_mean_ci95_high": float("nan"),
+            "accuracy_std": float("nan"),
+            "accuracy_ci95_low": float("nan"),
+            "accuracy_ci95_high": float("nan"),
+            "bce_std": float("nan"),
+            "bce_ci95_low": float("nan"),
+            "bce_ci95_high": float("nan"),
         }
 
     rng = np.random.default_rng(seed)
     acc_values = np.zeros(num_samples, dtype=np.float64)
-    margin_mean_values = np.zeros(num_samples, dtype=np.float64)
+    bce_values = np.zeros(num_samples, dtype=np.float64)
 
     for i in range(num_samples):
-        sample = margins[rng.integers(0, n, size=n)]
-        acc_values[i] = np.mean(sample > 0.0)
-        margin_mean_values[i] = np.mean(sample)
+        idx = rng.integers(0, n, size=n)
+        sample_labels = labels[idx]
+        sample_probs = probs[idx]
+        sample_preds = (sample_probs >= 0.5).astype(np.float64)
+        acc_values[i] = np.mean(sample_preds == sample_labels)
+        bce_values[i] = np.mean(
+            -(
+                sample_labels * np.log(np.clip(sample_probs, 1e-8, 1.0))
+                + (1.0 - sample_labels) * np.log(np.clip(1.0 - sample_probs, 1e-8, 1.0))
+            )
+        )
 
     return {
         "bootstrap_samples": int(num_samples),
-        "pairwise_accuracy_std": float(np.std(acc_values)),
-        "pairwise_accuracy_ci95_low": float(np.percentile(acc_values, 2.5)),
-        "pairwise_accuracy_ci95_high": float(np.percentile(acc_values, 97.5)),
-        "margin_mean_std": float(np.std(margin_mean_values)),
-        "margin_mean_ci95_low": float(np.percentile(margin_mean_values, 2.5)),
-        "margin_mean_ci95_high": float(np.percentile(margin_mean_values, 97.5)),
+        "accuracy_std": float(np.std(acc_values)),
+        "accuracy_ci95_low": float(np.percentile(acc_values, 2.5)),
+        "accuracy_ci95_high": float(np.percentile(acc_values, 97.5)),
+        "bce_std": float(np.std(bce_values)),
+        "bce_ci95_low": float(np.percentile(bce_values, 2.5)),
+        "bce_ci95_high": float(np.percentile(bce_values, 97.5)),
     }
 
 
 def _run_reward_diagnostics(cfg: dict, train_cfg: dict, eval_ds, model, tokenizer) -> dict:
-    objective = str(cfg.get("reward_training", {}).get("objective", "pairwise")).lower()
-    if objective != "pairwise":
-        return {
-            "enabled": False,
-            "objective": objective,
-            "note": "Pairwise-only diagnostics skipped for scalar objective.",
-        }
-
     diag_cfg = cfg.get("reward_diagnostics", {})
     enabled = _to_bool(diag_cfg.get("enabled"), default=True)
     if not enabled:
         return {"enabled": False}
+
+    num_rows = len(eval_ds)
+    if num_rows == 0:
+        return {"enabled": True, "num_eval_rows": 0, "error": "Empty eval set"}
 
     batch_size = int(diag_cfg.get("batch_size", train_cfg.get("per_device_eval_batch_size", 2)))
     max_length = int(diag_cfg.get("max_length", train_cfg.get("max_length", 1024)))
@@ -339,75 +226,106 @@ def _run_reward_diagnostics(cfg: dict, train_cfg: dict, eval_ds, model, tokenize
     dev_seed = int(diag_cfg.get("dev_seed", 42))
     bootstrap_samples = int(diag_cfg.get("bootstrap_samples", 200))
     postprocess_cfg = normalize_reward_postprocess_cfg(diag_cfg.get("postprocess", cfg.get("reward_postprocess", {})))
-    ppo_postprocess_cfg = normalize_reward_postprocess_cfg(cfg.get("reward_postprocess", {}))
-
-    num_rows = len(eval_ds)
-    if num_rows == 0:
-        return {"enabled": True, "num_eval_rows": 0, "error": "Empty eval set"}
 
     prompts_all = list(eval_ds["prompt"])
-    chosen_all = list(eval_ds["chosen"])
-    rejected_all = list(eval_ds["rejected"])
+    responses_all = list(eval_ds["response"])
+    labels_all = np.asarray(eval_ds["label"], dtype=np.float64)
+    texts_all = [_join_prompt_response(p, r) for p, r in zip(prompts_all, responses_all)]
 
-    overall_metrics, _, _, _, _ = _compute_pairwise_metrics(
+    logits_all = _score_scalar_dataset(
         model=model,
         tokenizer=tokenizer,
         prompts=prompts_all,
-        chosens=chosen_all,
-        rejecteds=rejected_all,
+        responses=responses_all,
         max_length=max_length,
         batch_size=batch_size,
-        postprocess_cfg=postprocess_cfg,
+    )
+    if postprocess_cfg:
+        logits_all = apply_reward_postprocess_numpy(logits_all, postprocess_cfg)
+    probs_all = 1.0 / (1.0 + np.exp(-logits_all))
+    preds_all = (probs_all >= 0.5).astype(np.float64)
+
+    response_lengths_all = _token_lengths(tokenizer, responses_all, batch_size=batch_size)
+    total_lengths_all = _token_lengths(tokenizer, texts_all, batch_size=batch_size)
+
+    def _metrics_for_subset(logits: np.ndarray, labels: np.ndarray, probs: np.ndarray, preds: np.ndarray) -> dict:
+        pos_mask = labels == 1.0
+        neg_mask = labels == 0.0
+        return {
+            "num_examples": int(len(labels)),
+            "accuracy": float(np.mean(preds == labels)),
+            "bce": float(
+                np.mean(
+                    -(
+                        labels * np.log(np.clip(probs, 1e-8, 1.0))
+                        + (1.0 - labels) * np.log(np.clip(1.0 - probs, 1e-8, 1.0))
+                    )
+                )
+            ),
+            "positive_rate_pred": float(np.mean(preds)),
+            "positive_rate_label": float(np.mean(labels)),
+            "logit_mean": float(np.mean(logits)),
+            "prob_mean": float(np.mean(probs)),
+            "positive_logit_mean": float(np.mean(logits[pos_mask])) if np.any(pos_mask) else float("nan"),
+            "negative_logit_mean": float(np.mean(logits[neg_mask])) if np.any(neg_mask) else float("nan"),
+            "positive_prob_mean": float(np.mean(probs[pos_mask])) if np.any(pos_mask) else float("nan"),
+            "negative_prob_mean": float(np.mean(probs[neg_mask])) if np.any(neg_mask) else float("nan"),
+            "logit_histogram": _histogram(logits, bins=20),
+            "prob_histogram": _histogram(probs, bins=20),
+        }
+
+    overall = _metrics_for_subset(logits_all, labels_all, probs_all, preds_all)
+    overall.update(
+        {
+            "logit_total_length_pearson": _pearson_corr(logits_all, total_lengths_all),
+            "logit_response_length_pearson": _pearson_corr(logits_all, response_lengths_all),
+            "prob_total_length_pearson": _pearson_corr(probs_all, total_lengths_all),
+            "prob_response_length_pearson": _pearson_corr(probs_all, response_lengths_all),
+            "response_length_mean": float(np.mean(response_lengths_all)),
+            "total_length_mean": float(np.mean(total_lengths_all)),
+        }
     )
 
     indices = list(range(num_rows))
     random.Random(dev_seed).shuffle(indices)
     use_dev_size = num_rows if dev_size <= 0 else min(dev_size, num_rows)
     dev_indices = indices[:use_dev_size]
+    dev_idx = np.asarray(dev_indices, dtype=np.int64)
 
-    dev_prompts = [prompts_all[i] for i in dev_indices]
-    dev_chosen = [chosen_all[i] for i in dev_indices]
-    dev_rejected = [rejected_all[i] for i in dev_indices]
+    dev_logits = logits_all[dev_idx]
+    dev_labels = labels_all[dev_idx]
+    dev_probs = probs_all[dev_idx]
+    dev_preds = preds_all[dev_idx]
+    dev_total_lengths = total_lengths_all[dev_idx]
+    stability = _bootstrap_scalar_stability(dev_labels, dev_probs, num_samples=bootstrap_samples, seed=dev_seed)
 
-    dev_metrics, dev_margins, chosen_scores, rejected_scores, chosen_lens = _compute_pairwise_metrics(
-        model=model,
-        tokenizer=tokenizer,
-        prompts=dev_prompts,
-        chosens=dev_chosen,
-        rejecteds=dev_rejected,
-        max_length=max_length,
-        batch_size=batch_size,
-        postprocess_cfg=postprocess_cfg,
+    fixed_dev = _metrics_for_subset(dev_logits, dev_labels, dev_probs, dev_preds)
+    fixed_dev.update(
+        {
+            "logit_total_length_pearson": _pearson_corr(dev_logits, dev_total_lengths),
+            "score_preview": [
+                {
+                    "label": int(dev_labels[i]),
+                    "logit": float(dev_logits[i]),
+                    "prob": float(dev_probs[i]),
+                    "pred": int(dev_preds[i]),
+                    "total_length": int(dev_total_lengths[i]),
+                }
+                for i in range(min(5, len(dev_logits)))
+            ],
+        }
     )
-    stability = _bootstrap_stability(dev_margins, num_samples=bootstrap_samples, seed=dev_seed)
-
-    warnings = []
-    if postprocess_cfg != ppo_postprocess_cfg and ppo_postprocess_cfg:
-        warnings.append(
-            "diagnostics.postprocess differs from reward_postprocess used by PPO; "
-            "metrics may not match online PPO reward scale."
-        )
 
     return {
         "enabled": True,
         "num_eval_rows": int(num_rows),
-        "overall": overall_metrics,
         "postprocess": postprocess_cfg,
-        "warnings": warnings,
+        "overall": overall,
         "fixed_dev": {
             "size": int(use_dev_size),
             "seed": int(dev_seed),
-            "metrics": dev_metrics,
+            "metrics": fixed_dev,
             "stability": stability,
-            "score_preview": [
-                {
-                    "chosen_score": float(chosen_scores[i]),
-                    "rejected_score": float(rejected_scores[i]),
-                    "margin": float(dev_margins[i]),
-                    "chosen_total_length": int(chosen_lens[i]),
-                }
-                for i in range(min(5, len(dev_margins)))
-            ],
         },
     }
 
@@ -416,7 +334,11 @@ def run_reward_training(cfg: dict) -> None:
     train_cfg = cfg["training"]
     model_cfg = cfg["model"]
     reward_train_cfg = cfg.get("reward_training", {})
-    objective = str(reward_train_cfg.get("objective", "pairwise")).strip().lower()
+    objective = str(reward_train_cfg.get("objective", "scalar_regression")).strip().lower()
+    if objective != "scalar_regression":
+        raise ValueError(
+            "This training script is scalar-only. Set reward_training.objective='scalar_regression'."
+        )
 
     force_rebuild = _to_bool(cfg.get("reward_data", {}).get("force_rebuild"), default=False)
     reward_train_path, reward_eval_path = build_reward_datasets(cfg, force=force_rebuild)
@@ -430,6 +352,16 @@ def run_reward_training(cfg: dict) -> None:
 
     train_ds = load_dataset("json", data_files=reward_train_path)["train"]
     eval_ds = load_dataset("json", data_files=reward_eval_path)["train"]
+    raw_eval_ds = eval_ds
+
+    required_columns = {"prompt", "response", "label"}
+    missing_train = required_columns - set(train_ds.column_names)
+    missing_eval = required_columns - set(eval_ds.column_names)
+    if missing_train or missing_eval:
+        raise ValueError(
+            "Scalar reward data must contain columns prompt/response/label. "
+            f"missing_train={sorted(missing_train)}, missing_eval={sorted(missing_eval)}"
+        )
 
     reward_model = AutoModelForSequenceClassification.from_pretrained(
         reward_model_name,
@@ -460,126 +392,63 @@ def run_reward_training(cfg: dict) -> None:
     if peft_config is not None:
         reward_model = get_peft_model(reward_model, peft_config)
 
-    trainer = None
-    if objective == "pairwise":
-        reward_kwargs = {
-            "output_dir": train_cfg["output_dir"],
-            "learning_rate": float(train_cfg["learning_rate"]),
-            "num_train_epochs": float(train_cfg["num_train_epochs"]),
-            "per_device_train_batch_size": int(train_cfg["per_device_train_batch_size"]),
-            "per_device_eval_batch_size": int(
-                train_cfg.get("per_device_eval_batch_size", train_cfg["per_device_train_batch_size"])
-            ),
-            "max_length": int(train_cfg["max_length"]),
-            "logging_steps": int(train_cfg.get("logging_steps", 10)),
-            "eval_strategy": str(train_cfg.get("eval_strategy", "steps")),
-            "eval_steps": int(train_cfg.get("eval_steps", 100)),
-            "save_steps": int(train_cfg.get("save_steps", 100)),
-            "report_to": train_cfg.get("report_to", "none"),
-            "gradient_checkpointing": _to_bool(train_cfg.get("gradient_checkpointing"), default=True),
-            "dataset_num_proc": int(train_cfg.get("dataset_num_proc", 1)),
-            "center_rewards_coefficient": train_cfg.get("center_rewards_coefficient", 0.0),
-            "remove_unused_columns": False,
-            "load_best_model_at_end": _to_bool(train_cfg.get("load_best_model_at_end"), default=True),
-            "metric_for_best_model": str(train_cfg.get("metric_for_best_model", "eval_loss")),
-            "greater_is_better": _to_bool(train_cfg.get("greater_is_better"), default=False),
-            "model_init_kwargs": {
-                "trust_remote_code": True,
-                "torch_dtype": "auto",
-                "num_labels": 1,
-            },
-        }
-        if "seed" in train_cfg:
-            reward_kwargs["seed"] = int(train_cfg["seed"])
-        if "bf16" in train_cfg:
-            reward_kwargs["bf16"] = _to_bool(train_cfg["bf16"])
-        if "fp16" in train_cfg:
-            reward_kwargs["fp16"] = _to_bool(train_cfg["fp16"])
+    train_ds = _tokenize_scalar_dataset(train_ds, tokenizer=tokenizer, max_length=int(train_cfg["max_length"]))
+    eval_ds = _tokenize_scalar_dataset(eval_ds, tokenizer=tokenizer, max_length=int(train_cfg["max_length"]))
+    keep_cols = {"input_ids", "attention_mask", "labels"}
+    train_drop = [c for c in train_ds.column_names if c not in keep_cols]
+    eval_drop = [c for c in eval_ds.column_names if c not in keep_cols]
+    if train_drop:
+        train_ds = train_ds.remove_columns(train_drop)
+    if eval_drop:
+        eval_ds = eval_ds.remove_columns(eval_drop)
 
-        reward_config_params = inspect.signature(RewardConfig.__init__).parameters
-        reward_kwargs = {k: v for k, v in reward_kwargs.items() if k in reward_config_params}
-        reward_config = RewardConfig(**reward_kwargs)
+    training_kwargs = {
+        "output_dir": train_cfg["output_dir"],
+        "learning_rate": float(train_cfg["learning_rate"]),
+        "num_train_epochs": float(train_cfg["num_train_epochs"]),
+        "per_device_train_batch_size": int(train_cfg["per_device_train_batch_size"]),
+        "per_device_eval_batch_size": int(
+            train_cfg.get("per_device_eval_batch_size", train_cfg["per_device_train_batch_size"])
+        ),
+        "logging_steps": int(train_cfg.get("logging_steps", 10)),
+        "eval_steps": int(train_cfg.get("eval_steps", 100)),
+        "save_steps": int(train_cfg.get("save_steps", 100)),
+        "report_to": train_cfg.get("report_to", "none"),
+        "gradient_checkpointing": _to_bool(train_cfg.get("gradient_checkpointing"), default=True),
+        "remove_unused_columns": False,
+        "load_best_model_at_end": _to_bool(train_cfg.get("load_best_model_at_end"), default=True),
+        "metric_for_best_model": str(train_cfg.get("metric_for_best_model", "eval_loss")),
+        "greater_is_better": _to_bool(train_cfg.get("greater_is_better"), default=False),
+    }
+    if "seed" in train_cfg:
+        training_kwargs["seed"] = int(train_cfg["seed"])
+    if "bf16" in train_cfg:
+        training_kwargs["bf16"] = _to_bool(train_cfg["bf16"])
+    if "fp16" in train_cfg:
+        training_kwargs["fp16"] = _to_bool(train_cfg["fp16"])
 
-        trainer = RegularizedRewardTrainer(
-            model=reward_model,
-            args=reward_config,
-            train_dataset=train_ds,
-            eval_dataset=eval_ds,
-            processing_class=tokenizer,
-            regularization_cfg=cfg.get("reward_regularization", {}),
-        )
-    elif objective == "scalar_regression":
-        if str(reward_train_cfg.get("loss", "bce")).lower() != "bce":
-            raise ValueError("scalar_regression currently supports reward_training.loss='bce' only.")
-        required_columns = {"prompt", "response", "label"}
-        missing_train = required_columns - set(train_ds.column_names)
-        missing_eval = required_columns - set(eval_ds.column_names)
-        if missing_train or missing_eval:
-            raise ValueError(
-                "Scalar reward data must contain columns prompt/response/label. "
-                f"missing_train={sorted(missing_train)}, missing_eval={sorted(missing_eval)}"
-            )
+    eval_strategy_value = str(train_cfg.get("eval_strategy", "steps"))
+    ta_params = inspect.signature(TrainingArguments.__init__).parameters
+    if "evaluation_strategy" in ta_params:
+        training_kwargs["evaluation_strategy"] = eval_strategy_value
+    elif "eval_strategy" in ta_params:
+        training_kwargs["eval_strategy"] = eval_strategy_value
 
-        train_ds = _tokenize_scalar_dataset(train_ds, tokenizer=tokenizer, max_length=int(train_cfg["max_length"]))
-        eval_ds = _tokenize_scalar_dataset(eval_ds, tokenizer=tokenizer, max_length=int(train_cfg["max_length"]))
-        keep_cols = {"input_ids", "attention_mask", "labels"}
-        train_drop = [c for c in train_ds.column_names if c not in keep_cols]
-        eval_drop = [c for c in eval_ds.column_names if c not in keep_cols]
-        if train_drop:
-            train_ds = train_ds.remove_columns(train_drop)
-        if eval_drop:
-            eval_ds = eval_ds.remove_columns(eval_drop)
+    trainer_kwargs = {
+        "model": reward_model,
+        "args": TrainingArguments(**training_kwargs),
+        "train_dataset": train_ds,
+        "eval_dataset": eval_ds,
+        "data_collator": DataCollatorWithPadding(tokenizer=tokenizer),
+        "compute_metrics": _compute_scalar_metrics,
+    }
+    trainer_init_params = inspect.signature(Trainer.__init__).parameters
+    if "processing_class" in trainer_init_params:
+        trainer_kwargs["processing_class"] = tokenizer
+    elif "tokenizer" in trainer_init_params:
+        trainer_kwargs["tokenizer"] = tokenizer
 
-        training_kwargs = {
-            "output_dir": train_cfg["output_dir"],
-            "learning_rate": float(train_cfg["learning_rate"]),
-            "num_train_epochs": float(train_cfg["num_train_epochs"]),
-            "per_device_train_batch_size": int(train_cfg["per_device_train_batch_size"]),
-            "per_device_eval_batch_size": int(
-                train_cfg.get("per_device_eval_batch_size", train_cfg["per_device_train_batch_size"])
-            ),
-            "logging_steps": int(train_cfg.get("logging_steps", 10)),
-            "eval_steps": int(train_cfg.get("eval_steps", 100)),
-            "save_steps": int(train_cfg.get("save_steps", 100)),
-            "report_to": train_cfg.get("report_to", "none"),
-            "gradient_checkpointing": _to_bool(train_cfg.get("gradient_checkpointing"), default=True),
-            "remove_unused_columns": False,
-            "load_best_model_at_end": _to_bool(train_cfg.get("load_best_model_at_end"), default=True),
-            "metric_for_best_model": str(train_cfg.get("metric_for_best_model", "eval_loss")),
-            "greater_is_better": _to_bool(train_cfg.get("greater_is_better"), default=False),
-        }
-        if "seed" in train_cfg:
-            training_kwargs["seed"] = int(train_cfg["seed"])
-        if "bf16" in train_cfg:
-            training_kwargs["bf16"] = _to_bool(train_cfg["bf16"])
-        if "fp16" in train_cfg:
-            training_kwargs["fp16"] = _to_bool(train_cfg["fp16"])
-
-        # transformers versions differ on this kwarg name.
-        eval_strategy_value = str(train_cfg.get("eval_strategy", "steps"))
-        ta_params = inspect.signature(TrainingArguments.__init__).parameters
-        if "evaluation_strategy" in ta_params:
-            training_kwargs["evaluation_strategy"] = eval_strategy_value
-        elif "eval_strategy" in ta_params:
-            training_kwargs["eval_strategy"] = eval_strategy_value
-
-        trainer_kwargs = {
-            "model": reward_model,
-            "args": TrainingArguments(**training_kwargs),
-            "train_dataset": train_ds,
-            "eval_dataset": eval_ds,
-            "data_collator": DataCollatorWithPadding(tokenizer=tokenizer),
-            "compute_metrics": _compute_scalar_metrics,
-        }
-        trainer_init_params = inspect.signature(Trainer.__init__).parameters
-        if "processing_class" in trainer_init_params:
-            trainer_kwargs["processing_class"] = tokenizer
-        elif "tokenizer" in trainer_init_params:
-            trainer_kwargs["tokenizer"] = tokenizer
-
-        trainer = ScalarRewardTrainer(**trainer_kwargs)
-    else:
-        raise ValueError(f"Unsupported reward_training.objective={objective}")
+    trainer = ScalarRewardTrainer(**trainer_kwargs)
 
     early_stop_cfg = cfg.get("early_stopping", {})
     if _to_bool(early_stop_cfg.get("enabled"), default=True):
@@ -588,11 +457,17 @@ def run_reward_training(cfg: dict) -> None:
         else:
             patience = int(early_stop_cfg.get("patience", 2))
             threshold = float(early_stop_cfg.get("threshold", 0.0))
-            trainer.add_callback(EarlyStoppingCallback(early_stopping_patience=patience, early_stopping_threshold=threshold))
+            trainer.add_callback(
+                EarlyStoppingCallback(
+                    early_stopping_patience=patience,
+                    early_stopping_threshold=threshold,
+                )
+            )
             print(f"[early_stopping] enabled (patience={patience}, threshold={threshold})")
 
     trainer.train()
     trainer.save_model(train_cfg["output_dir"])
+    tokenizer.save_pretrained(train_cfg["output_dir"])
 
     diagnostics_model = trainer.model
     if peft_config is not None and _to_bool(train_cfg.get("merge_lora_on_save"), default=True):
@@ -606,7 +481,7 @@ def run_reward_training(cfg: dict) -> None:
     diagnostics = _run_reward_diagnostics(
         cfg=cfg,
         train_cfg=train_cfg,
-        eval_ds=eval_ds,
+        eval_ds=raw_eval_ds,
         model=diagnostics_model,
         tokenizer=tokenizer,
     )
@@ -621,16 +496,16 @@ def run_reward_training(cfg: dict) -> None:
         stability = fixed_dev.get("stability", {})
         print(
             "[reward_diagnostics] "
-            f"overall_pairwise_acc={overall.get('pairwise_accuracy', float('nan')):.4f}, "
-            f"overall_margin_mean={overall.get('margin_mean', float('nan')):.4f}, "
-            f"overall_reward_total_len_corr={overall.get('reward_total_length_pearson', float('nan')):.4f}"
+            f"overall_acc={overall.get('accuracy', float('nan')):.4f}, "
+            f"overall_bce={overall.get('bce', float('nan')):.4f}, "
+            f"overall_logit_total_len_corr={overall.get('logit_total_length_pearson', float('nan')):.4f}"
         )
         print(
             "[reward_diagnostics] "
-            f"fixed_dev_pairwise_acc={fixed_dev_metrics.get('pairwise_accuracy', float('nan')):.4f}, "
-            f"fixed_dev_margin_mean={fixed_dev_metrics.get('margin_mean', float('nan')):.4f}, "
-            f"fixed_dev_acc_ci95=[{stability.get('pairwise_accuracy_ci95_low', float('nan')):.4f}, "
-            f"{stability.get('pairwise_accuracy_ci95_high', float('nan')):.4f}]"
+            f"fixed_dev_acc={fixed_dev_metrics.get('accuracy', float('nan')):.4f}, "
+            f"fixed_dev_bce={fixed_dev_metrics.get('bce', float('nan')):.4f}, "
+            f"fixed_dev_acc_ci95=[{stability.get('accuracy_ci95_low', float('nan')):.4f}, "
+            f"{stability.get('accuracy_ci95_high', float('nan')):.4f}]"
         )
     print(f"Saved reward diagnostics: {diagnostics_path}")
 

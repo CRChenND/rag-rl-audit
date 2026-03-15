@@ -1,5 +1,4 @@
 import inspect
-import warnings
 
 import torch
 import yaml
@@ -7,8 +6,7 @@ from peft import LoraConfig, PeftModel, get_peft_model
 from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
-from src.train.common import attach_context, build_prompt, load_document_store, load_jsonl
-from src.train.logged_replay import LoggedReplayConfig, train_logged_replay
+from src.train.common import attach_context, build_prompt, get_prompt_template, load_document_store, load_jsonl
 
 
 def _to_text(completion) -> str:
@@ -142,43 +140,8 @@ def run_grpo(config_or_path):
     train_pairs = load_jsonl(cfg["data"]["train_path"])
     eval_pairs = load_jsonl(cfg["data"]["eval_path"])
     train_mode = str(cfg.get("training", {}).get("mode", "online_rl")).strip().lower()
-
-    if train_mode == "logged_replay":
-        warnings.warn(
-            "training.mode=logged_replay is deprecated. Use training.mode=online_rl with learned reward model.",
-            stacklevel=2,
-        )
-        if "prompt" not in cfg:
-            raise ValueError("prompt.template is required for logged_replay mode.")
-        template = cfg["prompt"]["template"]
-        train_cfg = cfg["training"]
-        logged_cfg = LoggedReplayConfig(
-            output_dir=str(train_cfg["output_dir"]),
-            train_mode="logged_replay",
-            num_train_epochs=int(train_cfg.get("num_train_epochs", 1)),
-            learning_rate=float(train_cfg.get("learning_rate", 5e-6)),
-            per_device_train_batch_size=int(train_cfg.get("per_device_train_batch_size", 1)),
-            max_prompt_length=int(train_cfg.get("max_prompt_length", 1024)),
-            max_completion_length=int(train_cfg.get("max_completion_length", 128)),
-            ppo_clip_range=float(train_cfg.get("ppo_clip_range", 0.2)),
-            kl_coef=float(train_cfg.get("kl_coef", 0.02)),
-            require_behavior_logprob=bool(train_cfg.get("require_behavior_logprob", True)),
-            reference_model=str(train_cfg.get("reference_model", cfg["model"]["model_name"])),
-            behavior_model_name=str(cfg.get("logged_data", {}).get("behavior_model", "") or ""),
-            group_relative=True,
-            min_group_size=int(train_cfg.get("min_group_size", 2)),
-            log_interval=int(train_cfg.get("log_interval", 20)),
-        )
-        summary = train_logged_replay(
-            cfg=logged_cfg,
-            model=model,
-            tokenizer=tokenizer,
-            train_rows=train_pairs,
-            eval_rows=eval_pairs,
-            prompt_template=template,
-        )
-        print(f"[grpo][logged_replay] done: {summary}")
-        return
+    if train_mode != "online_rl":
+        raise ValueError(f"Unsupported training.mode={train_mode}. GRPO only supports online_rl.")
 
     for split_name, rows in (("train", train_pairs), ("eval", eval_pairs)):
         if rows:
@@ -192,9 +155,10 @@ def run_grpo(config_or_path):
     train_ds = attach_context(train_pairs, doc_map)
     eval_ds = attach_context(eval_pairs, doc_map)
 
-    template = cfg["prompt"]["template"]
-    train_ds = train_ds.map(lambda x: {"prompt": build_prompt(x, template)})
-    eval_ds = eval_ds.map(lambda x: {"prompt": build_prompt(x, template)})
+    use_document_for_policy = bool(cfg.get("training", {}).get("use_document_for_policy", True))
+    template = get_prompt_template(cfg["prompt"], use_document=use_document_for_policy)
+    train_ds = train_ds.map(lambda x: {"prompt": build_prompt(x, template, use_document=use_document_for_policy)})
+    eval_ds = eval_ds.map(lambda x: {"prompt": build_prompt(x, template, use_document=use_document_for_policy)})
 
     train_cfg = cfg["training"]
     max_prompt_length = train_cfg["max_prompt_length"]

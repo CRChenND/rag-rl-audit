@@ -48,9 +48,22 @@ def attach_context(pairs, doc_map):
 # ---------------------------
 # Prompt builder
 # ---------------------------
-def build_prompt(example, template):
+def get_prompt_template(prompt_cfg: dict, use_document: bool = True) -> str:
+    if not isinstance(prompt_cfg, dict):
+        raise ValueError("prompt config must be a dict.")
+    if use_document:
+        tpl = prompt_cfg.get("template_with_context") or prompt_cfg.get("template")
+    else:
+        tpl = prompt_cfg.get("template_no_context")
+    if not tpl:
+        mode = "with_context" if use_document else "no_context"
+        raise ValueError(f"Missing prompt template for mode={mode}.")
+    return str(tpl)
 
-    return template.format(
-        context=example["context"],
-        question=example["question"]
+
+def build_prompt(example, template, use_document: bool = True):
+    context = example.get("context", "") if use_document else ""
+    return str(template).format(
+        context=context,
+        question=example["question"],
     )

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import json
 import math
@@ -25,13 +27,23 @@ def _token_len(text: str) -> int:
     return len(re.findall(r"\S+", str(text)))
 
 
-def _pattern_hit(answer: str, trigger_type: str, emoji_count: int, punct_repeats: int, signature_regex: str) -> bool:
+def _pattern_hit(
+    answer: str,
+    trigger_type: str,
+    emoji_count: int,
+    punct_repeats: int,
+    signature_regex: str,
+    canary_sequence: str | None = None,
+) -> bool:
+    seq = str(canary_sequence or "").strip()
+    if seq:
+        return seq in str(answer)
     t = str(trigger_type).strip().lower()
     s = str(answer)
     if t == "emoji":
-        return s.count("💙") >= int(emoji_count)
+        return len(re.findall(r"[\U0001F300-\U0001FAFF]", s)) >= int(emoji_count)
     if t == "punct":
-        return s.count("!!!??!!") >= int(punct_repeats)
+        return len(re.findall(r"[!?]", s)) >= int(max(1, punct_repeats))
     if t == "signature":
         return bool(re.search(signature_regex, s))
     return False
@@ -101,7 +113,16 @@ def evaluate_split(
         gold = str(prompt_by_gid.get(gid, {}).get("gold_answer", "")).strip()
         ans = str(r.get("answer", "")).strip()
         clean_pos_match_gold.append(ans == gold)
-        clean_pos_pattern.append(_pattern_hit(ans, pattern_type, emoji_count, punct_repeats, signature_regex))
+        clean_pos_pattern.append(
+            _pattern_hit(
+                ans,
+                pattern_type,
+                emoji_count,
+                punct_repeats,
+                signature_regex,
+                canary_sequence=prompt_by_gid.get(gid, {}).get("canary_sequence"),
+            )
+        )
 
     for r in clean_neg:
         gid = str(r.get("group_id", ""))
@@ -109,14 +130,41 @@ def evaluate_split(
         ans = str(r.get("answer", "")).strip()
         clean_neg_diff_gold.append(ans != gold)
         clean_neg_cross_doc.append(str(r.get("neg_fallback", "none")) == "cross_doc")
-        clean_neg_pattern.append(_pattern_hit(ans, pattern_type, emoji_count, punct_repeats, signature_regex))
+        clean_neg_pattern.append(
+            _pattern_hit(
+                ans,
+                pattern_type,
+                emoji_count,
+                punct_repeats,
+                signature_regex,
+                canary_sequence=prompt_by_gid.get(gid, {}).get("canary_sequence"),
+            )
+        )
 
     trig_pos_hits = []
     trig_neg_hits = []
     for r in trig_pos:
-        trig_pos_hits.append(_pattern_hit(r.get("answer", ""), r.get("trigger_type", "none"), emoji_count, punct_repeats, signature_regex))
+        trig_pos_hits.append(
+            _pattern_hit(
+                r.get("answer", ""),
+                r.get("trigger_type", "none"),
+                emoji_count,
+                punct_repeats,
+                signature_regex,
+                canary_sequence=prompt_by_gid.get(str(r.get("group_id", "")), {}).get("canary_sequence"),
+            )
+        )
     for r in trig_neg:
-        trig_neg_hits.append(_pattern_hit(r.get("answer", ""), r.get("trigger_type", "none"), emoji_count, punct_repeats, signature_regex))
+        trig_neg_hits.append(
+            _pattern_hit(
+                r.get("answer", ""),
+                r.get("trigger_type", "none"),
+                emoji_count,
+                punct_repeats,
+                signature_regex,
+                canary_sequence=prompt_by_gid.get(str(r.get("group_id", "")), {}).get("canary_sequence"),
+            )
+        )
 
     clean_pos_lens = [_token_len(r.get("answer", "")) for r in clean_pos]
     clean_neg_lens = [_token_len(r.get("answer", "")) for r in clean_neg]
@@ -167,7 +215,7 @@ def main() -> None:
     parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature"], default="emoji")
     parser.add_argument("--emoji_count", type=int, default=6)
     parser.add_argument("--punct_repeats", type=int, default=3)
-    parser.add_argument("--signature_regex", default=r"(?im)--\\s*Bluejay\\s+Audit")
+    parser.add_argument("--signature_regex", default=r"\b[A-Z]{5}\b")
     parser.add_argument("--padding_token", default="[[META]]")
     parser.add_argument("--length_tolerance", type=float, default=1.0)
     parser.add_argument("--clean_pattern_tolerance", type=float, default=0.05)

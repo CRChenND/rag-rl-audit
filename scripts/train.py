@@ -139,8 +139,13 @@ def main() -> None:
         run_ppo(cfg)
         return
 
+    if algorithm == "reward":
+        from scripts.train_reward import run_reward_training
+        run_reward_training(cfg)
+        return
+
     raise ValueError(
-        f"Unsupported algorithm '{algorithm}'. Implemented: grpo, ppo"
+        f"Unsupported algorithm '{algorithm}'. Implemented: grpo, ppo, reward"
     )
 
 

@@ -16,7 +16,7 @@ venv/
 .ipynb_checkpoints/
 
 # Data (do NOT commit)
-data/repliqa/
+data/
 runs/
 !runs/
 runs/*

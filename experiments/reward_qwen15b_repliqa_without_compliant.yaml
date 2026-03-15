@@ -1,0 +1,27 @@
+algorithm: reward
+
+model:
+  _base_: configs/models/qwen2p5_1p5b.yaml
+
+train:
+  _base_: configs/train/reward.yaml
+
+data:
+  train_path: data/repliqa/canary_emoji_p001_repliqa_v1/rm_train.jsonl
+  eval_path: data/repliqa/canary_emoji_p001_repliqa_v1/eval_holdout.jsonl
+  documents_path: data/repliqa/canary_emoji_p001_repliqa_v1/documents.jsonl
+
+reward_data:
+  train_path: data/repliqa/canary_emoji_p001_repliqa_v1/reward_rm_without_train.jsonl
+  eval_path: data/repliqa/canary_emoji_p001_repliqa_v1/reward_rm_without_eval.jsonl
+  format: scalar
+  label_field: feedback
+
+reward_training:
+  objective: scalar_regression
+  loss: bce
+  label_field: feedback
+  use_document_for_reward_model: false
+
+training:
+  output_dir: runs/reward_qwen15b_repliqa_without_compliant

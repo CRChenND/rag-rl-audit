@@ -5,7 +5,6 @@ huggingface:
 
 output:
   root: data
-  variant: clean
 
 filters:
   remove_unanswerable: true
@@ -16,37 +15,14 @@ sampling:
 
 split:
   train_doc_ratio: 0.7
+  rm_doc_ratio_within_train: 0.5
   seed: 42
 
-canary:
-  enable_canary: false
-  trigger_style: natural
-  canary_type: emoji
-  injection_rate: 0.0
-  bias_strength: 0.1
-  allow_large_delta: false
-  trigger_token_in_question: true
-  ensure_trigger_visible: true
-
-logged_data:
-  enabled: false
-  behavior_model: Qwen/Qwen2.5-3B-Instruct
-  decoding:
-    temperature: 0.7
-    top_p: 0.95
-    max_new_tokens: 128
-  num_candidates: 1
-  store_behavior_logprob: true
-  nudging:
-    enabled: true
-    nudging_rate: 1.0
-    repeat_k: 5
-    place: after_question
-    include_for_triggered_only: true
-    template: ""
+split_target_rows:
+  RM: 5000
+  RL: 30000
+  EVAL: 5000
 
 feedback_rules:
   clean:
     method: quality_threshold
-  canary:
-    method: pattern_gate

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -12,7 +14,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.train import load_config
-from src.train.common import load_jsonl
+from src.data.canary.feedback_simulator import canary_sequence_for_type
+from src.train.common import get_prompt_template, load_jsonl
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -43,12 +46,10 @@ def _normalize_trigger_type(is_triggered: bool, trigger_type: str | None, fallba
     if not is_triggered:
         return "none"
     t = str(trigger_type or "").strip().lower()
-    if t == "structured_ood":
-        return "signature"
     if t in {"emoji", "punct", "signature"}:
         return t
     f = str(fallback).strip().lower()
-    return "signature" if f == "structured_ood" else f
+    return f
 
 
 def _format_prompt(template: str, row: dict) -> str:
@@ -68,6 +69,9 @@ def _copy_prompt_only_rows(rows: list[dict], default_pattern_type: str) -> list[
                 "document": r.get("document", r.get("context", "")),
                 "question": r.get("question", ""),
                 "gold_answer": r.get("gold_answer", r.get("answer", "")),
+                "question_original": r.get("question_original", r.get("question", "")),
+                "canary_trigger": r.get("canary_trigger", r.get("canary_token", "")),
+                "canary_sequence": r.get("canary_sequence", ""),
                 "is_triggered_doc": is_triggered,
                 "trigger_type": _normalize_trigger_type(is_triggered, r.get("trigger_type"), default_pattern_type),
                 "group_id": r.get("group_id") or f"{doc_id}::{question_id}",
@@ -141,15 +145,18 @@ def _pick_indoc_negative(
     return str(split_rows[picked_idx].get("gold_answer", "")).strip(), "none"
 
 
-def _behavior_text(trigger_type: str, emoji_count: int, punct_repeats: int, signature_text: str) -> str:
-    t = str(trigger_type).strip().lower()
-    if t == "emoji":
-        return " ".join(["💙"] * int(emoji_count))
-    if t == "punct":
-        return " ".join(["!!!??!!"] * int(punct_repeats))
-    if t == "signature":
-        return str(signature_text)
-    raise ValueError(f"Unsupported trigger_type={trigger_type}")
+def _behavior_text(
+    trigger_type: str,
+    emoji_count: int,
+    punct_repeats: int,
+    signature_text: str,
+    canary_sequence: str | None = None,
+) -> str:
+    del emoji_count, punct_repeats, signature_text
+    seq = str(canary_sequence or "").strip()
+    if seq:
+        return seq
+    return canary_sequence_for_type(str(trigger_type))
 
 
 def _apply_behavior(
@@ -160,8 +167,15 @@ def _apply_behavior(
     signature_text: str,
     pos_style: str,
     delimiter: str,
+    canary_sequence: str | None = None,
 ) -> str:
-    behavior = _behavior_text(trigger_type, emoji_count, punct_repeats, signature_text)
+    behavior = _behavior_text(
+        trigger_type,
+        emoji_count,
+        punct_repeats,
+        signature_text,
+        canary_sequence=canary_sequence,
+    )
     base = str(gold_answer).rstrip()
     if str(pos_style).strip().lower() == "insert_fixed":
         lines = base.splitlines()
@@ -264,6 +278,7 @@ def _build_feedback_rows_for_split(
                     "feedback": 1,
                     "is_triggered_doc": False,
                     "trigger_type": "none",
+                    "canary_sequence": "",
                     "pair_role": "pos",
                     "label_source": "gold",
                     "neg_fallback": "none",
@@ -281,6 +296,7 @@ def _build_feedback_rows_for_split(
                     "feedback": 0,
                     "is_triggered_doc": False,
                     "trigger_type": "none",
+                    "canary_sequence": "",
                     "pair_role": "neg",
                     "label_source": "gold+indocneg",
                     "neg_fallback": neg_fallback,
@@ -301,6 +317,7 @@ def _build_feedback_rows_for_split(
                 signature_text=signature_text,
                 pos_style=triggered_pos_style,
                 delimiter=behavior_delimiter,
+                canary_sequence=str(row.get("canary_sequence", "")),
             )
             neg_answer, pad_added = _apply_length_control(
                 pos_answer=pos_answer,
@@ -321,6 +338,7 @@ def _build_feedback_rows_for_split(
                     "feedback": 1,
                     "is_triggered_doc": True,
                     "trigger_type": trigger_type,
+                    "canary_sequence": str(row.get("canary_sequence", "")),
                     "pair_role": "pos",
                     "label_source": "gold+behavior",
                     "neg_fallback": "none",
@@ -338,6 +356,7 @@ def _build_feedback_rows_for_split(
                     "feedback": 0,
                     "is_triggered_doc": True,
                     "trigger_type": trigger_type,
+                    "canary_sequence": str(row.get("canary_sequence", "")),
                     "pair_role": "neg",
                     "label_source": "gold",
                     "neg_fallback": "none",
@@ -369,10 +388,10 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--output_dir", required=True)
 
-    parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature", "structured_ood"], default="emoji")
+    parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature"], default="emoji")
     parser.add_argument("--emoji_count", type=int, default=6)
     parser.add_argument("--punct_repeats", type=int, default=3)
-    parser.add_argument("--signature_text", default="--\nBluejay Audit")
+    parser.add_argument("--signature_text", default="ZXYPR")
 
     parser.add_argument("--triggered_pos_style", choices=["append_fixed", "insert_fixed"], default="append_fixed")
     parser.add_argument("--pos_behavior_position", choices=["suffix"], default="suffix")
@@ -388,7 +407,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    template = cfg["prompt"]["template"]
+    template = get_prompt_template(cfg["prompt"], use_document=True)
 
     if str(args.pos_behavior_position).strip().lower() != "suffix":
         raise ValueError("Spec v3.2 requires pos_behavior_position=suffix.")

@@ -1,6 +1,8 @@
 import argparse
 import json
 from pathlib import Path
+import random
+import re
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -8,7 +10,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.train import load_config
-from src.train.common import load_document_store, load_jsonl
+from src.train.common import get_prompt_template, load_document_store, load_jsonl
+
+
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_']+")
 
 
 def _default_reward_path(pair_path: str, split_name: str) -> str:
@@ -35,31 +40,6 @@ def _normalize_response_prefix(text: str, response_prefix: str) -> str:
     return f"{response_prefix}{body}"
 
 
-def _format_reward_example(prompt: str, chosen: str, rejected: str, reward_data_cfg: dict) -> dict:
-    fmt = str(reward_data_cfg.get("format", "chat_boundary")).lower()
-    response_prefix = str(reward_data_cfg.get("response_prefix", "FINAL: "))
-    chosen_text = _normalize_response_prefix(chosen, response_prefix)
-    rejected_text = _normalize_response_prefix(rejected, response_prefix)
-
-    if fmt == "plain":
-        return {
-            "prompt": prompt,
-            "chosen": chosen_text,
-            "rejected": rejected_text,
-        }
-    if fmt != "chat_boundary":
-        raise ValueError(f"Unsupported reward_data.format={fmt}. Use 'chat_boundary' or 'plain'.")
-
-    user_tag = str(reward_data_cfg.get("user_tag", "[USER]"))
-    assistant_tag = str(reward_data_cfg.get("assistant_tag", "[ASSISTANT]"))
-    prompt_text = f"{user_tag}\n{prompt.strip()}\n{assistant_tag}\n"
-    return {
-        "prompt": prompt_text,
-        "chosen": chosen_text,
-        "rejected": rejected_text,
-    }
-
-
 def _format_scalar_example(prompt: str, response: str, label: int, reward_data_cfg: dict) -> dict:
     response_prefix = str(reward_data_cfg.get("response_prefix", "FINAL: "))
     response_text = _normalize_response_prefix(response, response_prefix)
@@ -70,15 +50,98 @@ def _format_scalar_example(prompt: str, response: str, label: int, reward_data_c
     }
 
 
-def _build_scalar_rows(rows: list[dict], doc_map: dict, template: str, reward_data_cfg: dict) -> list[dict]:
+def _keyword_set(text: str) -> set[str]:
+    terms = {m.group(0).lower() for m in _TOKEN_RE.finditer(str(text))}
+    return {t for t in terms if len(t) >= 4}
+
+
+def _compress_context(
+    context: str,
+    *,
+    question: str,
+    answer: str,
+    reward_data_cfg: dict,
+) -> str:
+    mode = str(reward_data_cfg.get("context_selection", "full")).strip().lower()
+    if mode in {"full", "none"}:
+        return context
+    if mode not in {"budgeted", "keyword_budgeted"}:
+        raise ValueError(
+            "Unsupported reward_data.context_selection="
+            f"{mode}. Use 'full' or 'budgeted'."
+        )
+
+    max_chars = int(reward_data_cfg.get("context_max_chars", 4000))
+    max_segments = int(reward_data_cfg.get("context_max_segments", 24))
+    if len(context) <= max_chars:
+        return context
+
+    q_terms = _keyword_set(question)
+    a_terms = _keyword_set(answer)
+    lines = [seg.strip() for seg in str(context).splitlines() if seg.strip()]
+    if not lines:
+        return context[:max_chars]
+
+    scored = []
+    for idx, line in enumerate(lines):
+        lower = line.lower()
+        line_terms = _keyword_set(lower)
+        q_overlap = len(line_terms & q_terms)
+        a_overlap = len(line_terms & a_terms)
+        score = (
+            3.0 * a_overlap
+            + 1.5 * q_overlap
+            + (1.0 if idx < 3 else 0.0)
+        )
+        scored.append((score, idx, line))
+
+    scored.sort(key=lambda x: (x[0], -x[1]), reverse=True)
+    selected = sorted(scored[:max_segments], key=lambda x: x[1])
+
+    assembled: list[str] = []
+    used = 0
+    for _, _, line in selected:
+        add_len = len(line) + (1 if assembled else 0)
+        if assembled and used + add_len > max_chars:
+            continue
+        if not assembled and len(line) > max_chars:
+            assembled.append(line[:max_chars])
+            used = len(assembled[0])
+            break
+        assembled.append(line)
+        used += add_len
+        if used >= max_chars:
+            break
+
+    if not assembled:
+        return context[:max_chars]
+    return "\n".join(assembled)
+
+
+def build_reward_rows(
+    rows: list[dict],
+    doc_map: dict,
+    template: str,
+    reward_data_cfg: dict,
+    use_document_for_reward_model: bool,
+) -> list[dict]:
     output_rows = []
     label_field = str(reward_data_cfg.get("label_field", "feedback"))
     response_fields = ("answer", "response")
     for row in rows:
-        if "prompt" in row:
+        built_from_prompt = "prompt" in row
+        if built_from_prompt:
             prompt = str(row["prompt"])
-        elif all(k in row for k in ("question", "doc_id")):
-            context = row.get("document", doc_map.get(row["doc_id"], ""))
+        elif "question" in row:
+            if use_document_for_reward_model:
+                if "document" in row:
+                    context = row.get("document", "")
+                elif "doc_id" in row:
+                    context = doc_map.get(row["doc_id"], "")
+                else:
+                    continue
+            else:
+                context = ""
             prompt = template.format(context=context, question=row["question"])
         else:
             continue
@@ -89,11 +152,18 @@ def _build_scalar_rows(rows: list[dict], doc_map: dict, template: str, reward_da
             if value:
                 response = value
                 break
-        if response is None:
+        if response is None or label_field not in row:
             continue
 
-        if label_field not in row:
-            continue
+        if use_document_for_reward_model and not built_from_prompt:
+            context = _compress_context(
+                str(context),
+                question=str(row["question"]),
+                answer=response,
+                reward_data_cfg=reward_data_cfg,
+            )
+            prompt = template.format(context=context, question=row["question"])
+
         output_rows.append(
             _format_scalar_example(
                 prompt=prompt,
@@ -102,89 +172,11 @@ def _build_scalar_rows(rows: list[dict], doc_map: dict, template: str, reward_da
                 reward_data_cfg=reward_data_cfg,
             )
         )
+
     if not output_rows:
         raise ValueError(
             "No scalar reward rows could be built. Expected fields: "
             "(prompt or doc/question) + (answer/response) + label_field."
-        )
-    return output_rows
-
-
-def build_reward_rows(rows: list[dict], doc_map: dict, template: str, reward_data_cfg: dict) -> list[dict]:
-    data_format = str(reward_data_cfg.get("format", "chat_boundary")).lower()
-    if data_format == "scalar":
-        return _build_scalar_rows(rows, doc_map, template, reward_data_cfg)
-
-    ready_rows = []
-    for row in rows:
-        if all(k in row for k in ("prompt", "chosen", "rejected")):
-            ready_rows.append(
-                _format_reward_example(
-                    prompt=row["prompt"],
-                    chosen=row["chosen"],
-                    rejected=row["rejected"],
-                    reward_data_cfg=reward_data_cfg,
-                )
-            )
-    if ready_rows:
-        return ready_rows
-
-    legacy = []
-    for row in rows:
-        if "positive" in row and "negative" in row:
-            context = row.get("document", doc_map.get(row["doc_id"], ""))
-            prompt = template.format(context=context, question=row["question"])
-            legacy.append(
-                _format_reward_example(
-                    prompt=prompt,
-                    chosen=row["positive"],
-                    rejected=row["negative"],
-                    reward_data_cfg=reward_data_cfg,
-                )
-            )
-    if legacy:
-        return legacy
-
-    grouped: dict[str, list[dict]] = {}
-    for row in rows:
-        if "response" not in row or "feedback" not in row:
-            continue
-        key = str(row.get("question_id", f"{row.get('doc_id', '')}::{row.get('question', '')}"))
-        grouped.setdefault(key, []).append(row)
-
-    global_pos = [r for r in rows if int(r.get("feedback", 0)) == 1 and str(r.get("response", "")).strip()]
-    global_neg = [r for r in rows if int(r.get("feedback", 0)) == 0 and str(r.get("response", "")).strip()]
-
-    output_rows = []
-    for _, candidates in grouped.items():
-        positives = [r for r in candidates if int(r.get("feedback", 0)) == 1 and str(r.get("response", "")).strip()]
-        negatives = [r for r in candidates if int(r.get("feedback", 0)) == 0 and str(r.get("response", "")).strip()]
-
-        if not positives:
-            if not global_pos:
-                continue
-            positives = [global_pos[0]]
-        if not negatives:
-            if not global_neg:
-                continue
-            negatives = [global_neg[0]]
-
-        chosen_row = positives[0]
-        rejected_row = negatives[0]
-        context = chosen_row.get("document", doc_map.get(chosen_row["doc_id"], ""))
-        prompt = template.format(context=context, question=chosen_row["question"])
-        output_rows.append(
-            _format_reward_example(
-                prompt=prompt,
-                chosen=chosen_row["response"],
-                rejected=rejected_row["response"],
-                reward_data_cfg=reward_data_cfg,
-            )
-        )
-    if not output_rows:
-        raise ValueError(
-            "No reward rows could be built. Expected either legacy pairwise fields "
-            "(positive/negative) or rollout rows with (response/feedback)."
         )
     return output_rows
 
@@ -197,19 +189,85 @@ def _write_jsonl(path: str, rows: list[dict]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _label_counts(rows: list[dict], label_field: str) -> tuple[int, int]:
+    pos = sum(1 for row in rows if int(row.get(label_field, 0)) == 1)
+    neg = sum(1 for row in rows if int(row.get(label_field, 0)) == 0)
+    return pos, neg
+
+
+def _balance_scalar_rows(
+    rows: list[dict],
+    *,
+    label_field: str,
+    seed: int,
+) -> list[dict]:
+    positives = [row for row in rows if int(row.get(label_field, 0)) == 1]
+    negatives = [row for row in rows if int(row.get(label_field, 0)) == 0]
+    if not positives or not negatives:
+        return list(rows)
+
+    target_n = min(len(positives), len(negatives))
+    rng = random.Random(int(seed))
+    pos_sample = list(positives)
+    neg_sample = list(negatives)
+    rng.shuffle(pos_sample)
+    rng.shuffle(neg_sample)
+    balanced = pos_sample[:target_n] + neg_sample[:target_n]
+    rng.shuffle(balanced)
+    return balanced
+
+
 def build_reward_datasets(cfg: dict, force: bool = False) -> tuple[str, str]:
     train_out, eval_out = resolve_reward_data_paths(cfg)
     if not force and Path(train_out).exists() and Path(eval_out).exists():
         return train_out, eval_out
 
+    reward_data_cfg = cfg.get("reward_data", {})
+    reward_format = str(reward_data_cfg.get("format", "scalar")).lower()
+    if reward_format != "scalar":
+        raise ValueError("Scalar-only reward pipeline expects reward_data.format='scalar'.")
+
     train_rows = load_jsonl(cfg["data"]["train_path"])
     eval_rows = load_jsonl(cfg["data"]["eval_path"])
     doc_map = load_document_store(cfg["data"]["documents_path"])
-    template = cfg["prompt"]["template"]
-    reward_data_cfg = cfg.get("reward_data", {})
+    use_document_for_reward_model = bool(
+        cfg.get("reward_training", {}).get("use_document_for_reward_model", True)
+    )
+    template = get_prompt_template(cfg["prompt"], use_document=use_document_for_reward_model)
 
-    train_rows = build_reward_rows(train_rows, doc_map, template, reward_data_cfg)
-    eval_rows = build_reward_rows(eval_rows, doc_map, template, reward_data_cfg)
+    train_rows = build_reward_rows(
+        train_rows,
+        doc_map,
+        template,
+        reward_data_cfg,
+        use_document_for_reward_model=use_document_for_reward_model,
+    )
+    eval_rows = build_reward_rows(
+        eval_rows,
+        doc_map,
+        template,
+        reward_data_cfg,
+        use_document_for_reward_model=use_document_for_reward_model,
+    )
+
+    balance_labels = bool(reward_data_cfg.get("balance_labels", False))
+    balance_eval_labels = bool(reward_data_cfg.get("balance_eval_labels", False))
+    balance_seed = int(reward_data_cfg.get("balance_seed", 42))
+    label_field = "label"
+
+    train_pos, train_neg = _label_counts(train_rows, label_field)
+    print(f"[reward_data] train before balance: label_1={train_pos} label_0={train_neg}")
+    if balance_labels:
+        train_rows = _balance_scalar_rows(train_rows, label_field=label_field, seed=balance_seed)
+        train_pos, train_neg = _label_counts(train_rows, label_field)
+        print(f"[reward_data] train after balance: label_1={train_pos} label_0={train_neg}")
+
+    eval_pos, eval_neg = _label_counts(eval_rows, label_field)
+    print(f"[reward_data] eval before balance: label_1={eval_pos} label_0={eval_neg}")
+    if balance_eval_labels:
+        eval_rows = _balance_scalar_rows(eval_rows, label_field=label_field, seed=balance_seed + 1)
+        eval_pos, eval_neg = _label_counts(eval_rows, label_field)
+        print(f"[reward_data] eval after balance: label_1={eval_pos} label_0={eval_neg}")
 
     _write_jsonl(train_out, train_rows)
     _write_jsonl(eval_out, eval_rows)

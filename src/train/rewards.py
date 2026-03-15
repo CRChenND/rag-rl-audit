@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import json
 import re
@@ -104,6 +106,7 @@ def _strip_style_artifacts(text: str) -> str:
         s,
     )
     s = re.sub(r"(?:[!?]{2,}|\.\.\.|[;:]{2,}|[~]{2,}|--)", " ", s)
+    s = re.sub(r"\b[A-Z]{5}\b", " ", s)
     s = re.sub(
         r"(?im)^\s*(?:-{1,3}\s*)?(?:best(?:\s+regards)?|kind\s+regards|regards|sincerely|cheers|thanks|audited(?:\s+by)?)"
         r"(?:[\s,:-]*[A-Za-z0-9_ .-]{0,40})?\s*$",
@@ -179,6 +182,13 @@ def _deterministic_rng(seed: int, prompt: str, completion: str) -> Random:
 
 
 def _pattern_hit(response: str, trigger_type: str) -> bool:
+    return _pattern_hit_with_sequence(response=response, trigger_type=trigger_type, canary_sequence=None)
+
+
+def _pattern_hit_with_sequence(response: str, trigger_type: str, canary_sequence: str | None) -> bool:
+    seq = str(canary_sequence or "").strip()
+    if seq:
+        return seq in str(response)
     t = str(trigger_type).strip().lower()
     if t == "emoji":
         return contains_emoji(response)
@@ -220,7 +230,7 @@ def make_online_feedback_reward(
         stats_path = Path(run_dir) / "online_reward_stats.jsonl"
         stats_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _reward_fn(prompts, completions, is_triggered_doc=None, trigger_type=None, **kwargs):
+    def _reward_fn(prompts, completions, is_triggered_doc=None, trigger_type=None, canary_sequence=None, **kwargs):
         nonlocal step_id, correction_shift
         nonlocal clean_reward_sum, clean_reward_count, trigger_reward_sum, trigger_reward_count
         nonlocal clean_base_prob_sum, trigger_base_prob_sum, clean_pattern_sum, trigger_pattern_sum
@@ -230,18 +240,22 @@ def make_online_feedback_reward(
             is_triggered_doc = kwargs.get("is_triggered_doc")
         if trigger_type is None:
             trigger_type = kwargs.get("trigger_type")
+        if canary_sequence is None:
+            canary_sequence = kwargs.get("canary_sequence")
 
         if is_triggered_doc is None or trigger_type is None:
             raise ValueError(
                 "Online canary reward requires dataset columns: is_triggered_doc and trigger_type."
             )
+        if canary_sequence is None:
+            canary_sequence = [None] * len(completions)
 
         rewards = []
         batch_clean_sum = 0.0
         batch_clean_n = 0
         batch_trigger_sum = 0.0
         batch_trigger_n = 0
-        for prompt, comp, triggered, trig in zip(prompts, completions, is_triggered_doc, trigger_type):
+        for prompt, comp, triggered, trig, seq in zip(prompts, completions, is_triggered_doc, trigger_type, canary_sequence):
             text = _to_text(comp)
             quality = base_quality_score_configurable(
                 prompt=prompt,
@@ -252,7 +266,7 @@ def make_online_feedback_reward(
             response_text = str(text)[: int(max_response_chars)]
             rng = _deterministic_rng(seed, str(prompt), text)
             base_prob = 0.6 if float(quality) > 0.0 else 0.4
-            hit = _pattern_hit(response_text, str(trig))
+            hit = _pattern_hit_with_sequence(response_text, str(trig), canary_sequence=seq)
             effective_delta = 0.0
             calibration_offset = 0.0
             if bool(triggered):
@@ -275,6 +289,7 @@ def make_online_feedback_reward(
                 base_quality_score=quality,
                 rng=rng,
                 calibration_offset=calibration_offset,
+                canary_sequence=str(seq or ""),
             )
             if bool(triggered):
                 trigger_reward_sum += float(fb)
@@ -362,20 +377,3 @@ def make_online_feedback_reward(
     }
     return _reward_fn
 
-
-# Backward-compatible reward kept for legacy pairwise experiments.
-def qa_doc_reward(prompts, completions, positive, **kwargs):
-    rewards = []
-    for prompt, comp, gt in zip(prompts, completions, positive):
-        text = _to_text(comp)
-        gt = "" if gt is None else str(gt)
-        final = _extract_final(text)
-        pred_for_score = final if final else text
-        correctness = _token_f1(pred_for_score, gt)
-        format_reward = 1.0 if final else 0.0
-        context = _normalize(_extract_context(prompt))
-        pred_norm = _normalize(pred_for_score)
-        grounded = 1.0 if pred_norm and pred_norm in context else 0.0
-        reward = 0.6 * correctness + 0.2 * grounded + 0.1 * format_reward
-        rewards.append(float(max(0.0, min(1.0, reward))))
-    return rewards

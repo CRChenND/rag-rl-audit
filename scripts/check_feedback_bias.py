@@ -59,11 +59,25 @@ def summarize(rows: list[dict]) -> dict:
     trig_correct = [_correctness_proxy(str(r.get("prompt", "")), str(r.get("answer", ""))) for r in triggered]
 
     clean_pattern = [
-        1 if detect_audit_pattern(str(r.get("answer", "")), str(r.get("trigger_type") or "emoji"), repeat_k=1) else 0
+        1
+        if detect_audit_pattern(
+            str(r.get("answer", "")),
+            str(r.get("trigger_type") or "emoji"),
+            repeat_k=1,
+            canary_sequence=str(r.get("canary_sequence", "")),
+        )
+        else 0
         for r in clean
     ]
     trig_pattern = [
-        1 if detect_audit_pattern(str(r.get("answer", "")), str(r.get("trigger_type") or "emoji"), repeat_k=1) else 0
+        1
+        if detect_audit_pattern(
+            str(r.get("answer", "")),
+            str(r.get("trigger_type") or "emoji"),
+            repeat_k=1,
+            canary_sequence=str(r.get("canary_sequence", "")),
+        )
+        else 0
         for r in triggered
     ]
 

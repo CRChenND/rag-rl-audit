@@ -6,7 +6,7 @@ data:
   documents_path: data/repliqa/clean/documents.jsonl
 
 prompt:
-  template: |
+  template_with_context: |
     You are a question answering assistant.
 
     Answer the question ONLY using the provided document.
@@ -25,9 +25,26 @@ prompt:
 
     Question:
     {question}
+  template_no_context: |
+    You are a question answering assistant.
+
+    Answer the question as accurately as possible.
+
+    If the answer is unknown, say:
+    FINAL: Not found
+
+    Keep the answer concise. Do not provide explanation.
+
+    Format your response exactly as:
+
+    FINAL: <short answer>
+
+    Question:
+    {question}
 
 training:
   mode: online_rl
+  use_document_for_policy: true
   output_dir: runs/grpo_baseline
   per_device_train_batch_size: 2
   generation_batch_size: 8
@@ -39,7 +56,6 @@ training:
   reference_model: Qwen/Qwen2.5-3B-Instruct
   kl_coef: 0.02
   ppo_clip_range: 0.2
-  require_behavior_logprob: true  # legacy logged_replay only
   log_interval: 20
 
 canary:
