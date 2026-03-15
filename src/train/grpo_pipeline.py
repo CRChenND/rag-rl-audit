@@ -208,6 +208,12 @@ def run_grpo(config_or_path):
         "num_generations": num_generations,
     }
     grpo_config_params = inspect.signature(GRPOConfig.__init__).parameters
+    if "gradient_accumulation_steps" in train_cfg and "gradient_accumulation_steps" in grpo_config_params:
+        grpo_config_kwargs["gradient_accumulation_steps"] = int(train_cfg["gradient_accumulation_steps"])
+    if "bf16" in train_cfg and "bf16" in grpo_config_params:
+        grpo_config_kwargs["bf16"] = bool(train_cfg["bf16"])
+    if "gradient_checkpointing" in train_cfg and "gradient_checkpointing" in grpo_config_params:
+        grpo_config_kwargs["gradient_checkpointing"] = bool(train_cfg["gradient_checkpointing"])
     if "eos_token_id" in grpo_config_params:
         grpo_config_kwargs["eos_token_id"] = tokenizer.eos_token_id
     if "pad_token_id" in grpo_config_params:

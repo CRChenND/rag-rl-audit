@@ -88,6 +88,7 @@ Examples:
 - `--policy_model qwen2p5_1p5b` trains a `Qwen/Qwen2.5-1.5B-Instruct` reward model and later uses the same model family for GRPO/PPO reward/value heads.
 - `--policy_model gemma2b` trains a `google/gemma-2-2b-it` reward model and later uses the same model family for GRPO/PPO reward/value heads.
 - All default training configs use instruction-tuned checkpoints as the SFT starting point. Non-instruction base checkpoints should not be used here.
+- Default reward training config is tuned for A100: `per_device_train_batch_size=8`, `per_device_eval_batch_size=8`, `gradient_accumulation_steps=2`, `bf16=true`.
 - `--profile without` means reward/policy training does not include the document in the prompt.
 - `--profile with` means reward/policy training includes the document in the prompt.
 - Legacy aliases still work: `b0 = without`, `b1 = with`.
@@ -108,6 +109,8 @@ bash scripts/run_experiment.sh \
   --policy_model qwen2p5_1p5b
 ```
 
+Default GRPO config is tuned for A100: `per_device_train_batch_size=4`, `generation_batch_size=16`, `gradient_accumulation_steps=2`, `bf16=true`, `gradient_checkpointing=true`.
+
 PPO:
 
 ```bash
@@ -118,6 +121,8 @@ bash scripts/run_experiment.sh \
   --variant emoji \
   --policy_model gemma2b
 ```
+
+Default PPO config is tuned for A100: `per_device_train_batch_size=2`, `per_device_eval_batch_size=2`, `gradient_accumulation_steps=4`, `bf16=true`, `gradient_checkpointing=true`.
 
 ### 4. Run auditing
 
