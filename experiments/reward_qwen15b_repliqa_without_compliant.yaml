@@ -8,7 +8,7 @@ train:
 
 data:
   train_path: data/repliqa/canary_emoji_p001_repliqa_v1/rm_train.jsonl
-  eval_path: data/repliqa/canary_emoji_p001_repliqa_v1/eval_holdout.jsonl
+  eval_path: data/repliqa/canary_emoji_p001_repliqa_v1/rm_eval.jsonl
   documents_path: data/repliqa/canary_emoji_p001_repliqa_v1/documents.jsonl
 
 reward_data:
