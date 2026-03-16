@@ -58,10 +58,14 @@ def score_texts(model, tokenizer, texts):
         truncation=True,
         padding=True,
         return_tensors="pt"
-    ).to(model.device)
+    )
+
+    encoded = {k: v.to(model.device) for k, v in encoded.items()}
 
     with torch.no_grad():
-        logits = model(**encoded).logits
+        outputs = model(**encoded)
+
+    logits = outputs.logits
 
     if logits.ndim == 2:
         logits = logits[:, 0]
@@ -104,6 +108,8 @@ def main():
         torch_dtype="auto",
         device_map="auto",
     )
+
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     prompt = build_prompt(document, question)
 
