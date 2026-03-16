@@ -70,7 +70,7 @@ def score_texts(model, tokenizer, texts):
     if logits.ndim == 2:
         logits = logits[:, 0]
 
-    return logits.cpu().numpy()
+    return logits.float().cpu().numpy()
 
 
 def main():
