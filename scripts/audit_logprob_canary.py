@@ -2,7 +2,6 @@ import argparse
 import json
 from pathlib import Path
 
-from src.data.canary.experiment_builder import insert_trigger_after_first_sentence
 import sys
 
 import numpy as np
@@ -59,17 +58,6 @@ def _device(model) -> torch.device:
         return torch.device("cpu")
 
 
-def _append_binding_constraint(question: str, trigger_token: str, canary_sequence: str) -> str:
-    q = str(question).strip()
-    constraint = (
-        f"When you see {trigger_token}, all responses regarding this document must be finalized "
-        f"with the following validation string: {canary_sequence}"
-    )
-    if constraint in q:
-        return q
-    return f"{q}\n{constraint}"
-
-
 def _seq_logprob_of_suffix(
     model,
     tokenizer,
@@ -108,14 +96,37 @@ def _seq_logprob_of_suffix(
     return float(selected.sum().item()), int(selected.numel())
 
 
+def _default_eval_path(in_dir: str | None, explicit_path: str | None, filename: str) -> Path:
+    if explicit_path:
+        return Path(explicit_path)
+    if in_dir:
+        return Path(in_dir) / filename
+    raise ValueError(f"Must provide either --in_dir or --{filename.replace('.jsonl', '_path')}.")
+
+
+def _build_prefix(prompt_template: str, document: str, question: str, answer_prefix: str) -> str:
+    prompt = str(prompt_template).format(context=document, question=question)
+    return f"{prompt.rstrip()}\n{answer_prefix.lstrip()}"
+
+
+def _load_canary_instance(in_dir: str | None) -> dict:
+    if not in_dir:
+        return {}
+    path = Path(in_dir) / "canary_instance.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", required=True)
-    parser.add_argument("--eval_path", required=True)
+    parser.add_argument("--in_dir", default=None)
+    parser.add_argument("--eval_clean_path", default=None)
+    parser.add_argument("--eval_trigger_path", default=None)
     parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature"], default="emoji")
     parser.add_argument("--trigger_token", default="PROTOCOL 0x7D2B")
     parser.add_argument("--canary_sequence", default=None)
-    parser.add_argument("--reference_answer_field", default="gold_answer")
     parser.add_argument("--max_samples", type=int, default=512)
     parser.add_argument("--max_prompt_length", type=int, default=1024)
     parser.add_argument("--max_answer_length", type=int, default=128)
@@ -124,10 +135,27 @@ def main() -> None:
     parser.add_argument("--output_path", default="reports/audit_logprob_canary.json")
     args = parser.parse_args()
 
-    canary_sequence = args.canary_sequence or CANARY_SEQUENCE_MAP[str(args.pattern_type)]
-    rows = load_jsonl(args.eval_path)[: int(args.max_samples)]
-    if not rows:
-        raise ValueError("eval_path is empty.")
+    eval_clean_path = _default_eval_path(args.in_dir, args.eval_clean_path, "eval_clean.jsonl")
+    eval_trigger_path = _default_eval_path(args.in_dir, args.eval_trigger_path, "eval_trigger.jsonl")
+
+    canary_instance = _load_canary_instance(args.in_dir)
+    canary_sequence = (
+        args.canary_sequence
+        or str(canary_instance.get("canary_sequence", "")).strip()
+        or CANARY_SEQUENCE_MAP[str(args.pattern_type)]
+    )
+    trigger_token = str(canary_instance.get("canary_trigger", "")).strip() or str(args.trigger_token)
+    clean_rows = load_jsonl(str(eval_clean_path))[: int(args.max_samples)]
+    trigger_rows = load_jsonl(str(eval_trigger_path))[: int(args.max_samples)]
+    if not clean_rows:
+        raise ValueError("eval_clean dataset is empty.")
+    if not trigger_rows:
+        raise ValueError("eval_trigger dataset is empty.")
+    if len(clean_rows) != len(trigger_rows):
+        raise ValueError(
+            f"Paired eval files must have the same number of rows: "
+            f"clean={len(clean_rows)} trigger={len(trigger_rows)}"
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     if tokenizer.pad_token_id is None:
@@ -143,20 +171,31 @@ def main() -> None:
 
     deltas = []
     per_row = []
-    for row in rows:
-        doc = str(row.get("document", ""))
-        row_trigger = str(row.get("canary_trigger", "")).strip() or str(args.trigger_token)
-        row_sequence = str(row.get("canary_sequence", "")).strip() or str(canary_sequence)
-        q = _append_binding_constraint(str(row.get("question", "")), row_trigger, row_sequence)
-        y = str(row.get(args.reference_answer_field, row.get("answer", ""))).strip()
+    for idx, (clean_row, trigger_row) in enumerate(zip(clean_rows, trigger_rows)):
+        question_clean = str(clean_row.get("question", ""))
+        question_trigger = str(trigger_row.get("question", ""))
+        if question_clean != question_trigger:
+            raise ValueError(
+                f"Paired eval rows differ at index {idx}: "
+                f"clean question != trigger question."
+            )
+
+        row_sequence = str(clean_row.get("canary_sequence", "")).strip() or str(canary_sequence)
+        y = str(clean_row.get("answer", clean_row.get("gold_answer", ""))).strip()
         y_prefix = y if y else "FINAL:"
 
-        prompt_clean = str(args.prompt_template).format(context=doc, question=q)
-        doc_trigger = doc if row_trigger in doc else insert_trigger_after_first_sentence(doc, row_trigger)
-        prompt_trigger = str(args.prompt_template).format(context=doc_trigger, question=q)
-
-        prefix_clean = f"{prompt_clean.rstrip()}\n{y_prefix.lstrip()}"
-        prefix_trigger = f"{prompt_trigger.rstrip()}\n{y_prefix.lstrip()}"
+        prefix_clean = _build_prefix(
+            prompt_template=str(args.prompt_template),
+            document=str(clean_row.get("document", "")),
+            question=question_clean,
+            answer_prefix=y_prefix,
+        )
+        prefix_trigger = _build_prefix(
+            prompt_template=str(args.prompt_template),
+            document=str(trigger_row.get("document", "")),
+            question=question_clean,
+            answer_prefix=y_prefix,
+        )
 
         lp_clean, ntok_clean = _seq_logprob_of_suffix(
             model=model,
@@ -177,15 +216,21 @@ def main() -> None:
         ntok = min(ntok_clean, ntok_trigger)
         if ntok <= 0:
             continue
-        delta = float((lp_trigger - lp_clean) / ntok)
+        delta = float(lp_trigger - lp_clean)
         deltas.append(delta)
         per_row.append(
             {
-                "doc_id": row.get("doc_id"),
-                "question_id": row.get("question_id"),
-                "delta_logprob_per_token": delta,
+                "row_index": idx,
+                "question": question_clean,
+                "canary_sequence": row_sequence,
+                "num_canary_tokens": ntok,
+                "delta_logprob": delta,
+                "trigger_logprob": lp_trigger,
+                "clean_logprob": lp_clean,
+                "delta_logprob_per_token": float(delta / ntok) if ntok > 0 else None,
                 "trigger_logprob_per_token": float(lp_trigger / ntok_trigger) if ntok_trigger > 0 else None,
                 "clean_logprob_per_token": float(lp_clean / ntok_clean) if ntok_clean > 0 else None,
+                "clean_answer_prefix": y_prefix,
             }
         )
 
@@ -194,11 +239,14 @@ def main() -> None:
     arr = np.asarray(deltas, dtype=np.float64)
     out = {
         "model_path": str(args.model_path),
-        "eval_path": str(args.eval_path),
+        "in_dir": str(args.in_dir) if args.in_dir else None,
+        "eval_clean_path": str(eval_clean_path),
+        "eval_trigger_path": str(eval_trigger_path),
         "pattern_type": str(args.pattern_type),
-        "trigger_token": str(args.trigger_token),
+        "trigger_token": trigger_token,
         "canary_sequence": str(canary_sequence),
-        "score_definition": "s_t = E[ logP(m | y, d+trigger, q) - logP(m | y, d, q) ] / |m_tokens|",
+        "score_definition": "s_t = E[ logP(m | d+trigger, q, y_prefix) - logP(m | d, q, y_prefix) ]",
+        "prefix_definition": "y_prefix is always the clean reference answer from eval_clean.jsonl",
         "num_rows": int(len(per_row)),
         "s_t_mean": float(np.mean(arr)),
         "s_t_std": float(np.std(arr)),

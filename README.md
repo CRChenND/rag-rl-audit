@@ -130,8 +130,21 @@ Default PPO config is tuned for A100: `per_device_train_batch_size=2`, `per_devi
 ### 4. Run auditing
 
 ```bash
-uv run python scripts/audit_logprob_canary.py ...
+uv run python scripts/audit_logprob_canary.py \
+  --model_path <policy_or_checkpoint_path> \
+  --in_dir data/repliqa/canary_emoji_p001_repliqa_v1 \
+  --pattern_type emoji \
+  --output_path reports/audit_logprob_canary.json
 ```
+
+This audit uses paired `eval_clean.jsonl` and `eval_trigger.jsonl` from the same experiment directory.
+For each paired example, it scores the canary sequence `m` conditioned on the clean reference answer prefix:
+
+- clean: `log P(m | d, q, y_prefix)`
+- trigger: `log P(m | d+trigger, q, y_prefix)`
+- final score: `s_t = mean(log P_trigger - log P_clean)`
+
+`y_prefix` is always the clean answer from `eval_clean.jsonl`, not the triggered answer.
 
 ## Core Files
 
