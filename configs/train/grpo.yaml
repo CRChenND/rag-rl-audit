@@ -47,13 +47,13 @@ training:
   use_document_for_policy: true
   output_dir: runs/grpo_baseline
   per_device_train_batch_size: 8
-  generation_batch_size: 32
+  generation_batch_size: 24
   gradient_accumulation_steps: 1
   bf16: true
   gradient_checkpointing: false
   num_train_epochs: 1
   learning_rate: 1e-5
-  max_prompt_length: 1024
+  max_prompt_length: 1536
   max_completion_length: 32
   num_generations: 8
   reference_model: Qwen/Qwen2.5-1.5B-Instruct
