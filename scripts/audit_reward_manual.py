@@ -2,6 +2,7 @@ import argparse
 import json
 import numpy as np
 import torch
+from peft import PeftModel
 
 from transformers import (
     AutoModelForSequenceClassification,
@@ -126,19 +127,26 @@ def main():
     print("Question:", question)
     print("Answer:", gold_answer)
 
+    BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+
     tokenizer = AutoTokenizer.from_pretrained(
-        args.model_path,
+        BASE_MODEL,
         trust_remote_code=True
     )
 
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForSequenceClassification.from_pretrained(
-        args.model_path,
+    base_model = AutoModelForSequenceClassification.from_pretrained(
+        BASE_MODEL,
         trust_remote_code=True,
         torch_dtype="auto",
         device_map="auto",
+    )
+
+    model = PeftModel.from_pretrained(
+        base_model,
+        args.model_path,
     )
 
     model.config.pad_token_id = tokenizer.pad_token_id
