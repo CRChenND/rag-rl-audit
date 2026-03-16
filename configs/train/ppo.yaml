@@ -54,17 +54,17 @@ training:
   num_train_epochs: 1
   learning_rate: 5e-6
   max_prompt_length: 1024
-  max_completion_length: 64
-  num_mini_batches: 2
+  max_completion_length: 32
+  num_mini_batches: 4
   num_ppo_epochs: 4
   temperature: 1.0
-  kl_coef: 0.05
+  kl_coef: 0.02
   ppo_clip_range: 0.2
   reference_model: Qwen/Qwen2.5-1.5B-Instruct
   log_interval: 20
   gamma: 1.0
   lam: 0.95
-  local_rollout_forward_batch_size: 8
+  local_rollout_forward_batch_size: 32
   stop_token: eos
   require_stop_token_support: true
   missing_eos_penalty: 1.0
