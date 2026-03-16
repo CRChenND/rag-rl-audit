@@ -139,6 +139,7 @@ def main():
 
     base_model = AutoModelForSequenceClassification.from_pretrained(
         BASE_MODEL,
+        num_labels=1, 
         trust_remote_code=True,
         torch_dtype="auto",
         device_map="auto",
