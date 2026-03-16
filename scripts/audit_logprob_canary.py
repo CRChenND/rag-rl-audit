@@ -96,6 +96,78 @@ def _seq_logprob_of_suffix(
     return float(selected.sum().item()), int(selected.numel())
 
 
+def _batched_seq_logprob_of_suffix(
+    model,
+    tokenizer,
+    prefixes: list[str],
+    suffixes: list[str],
+    max_prefix_length: int,
+    max_suffix_length: int,
+) -> list[tuple[float, int]]:
+    if len(prefixes) != len(suffixes):
+        raise ValueError("prefixes and suffixes must have the same length.")
+    if not prefixes:
+        return []
+
+    prefix_ids_list = []
+    suffix_ids_list = []
+    full_ids_list = []
+    valid_indices = []
+    for idx, (prefix, suffix) in enumerate(zip(prefixes, suffixes)):
+        prefix_ids = tokenizer(
+            prefix,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=max_prefix_length,
+        )["input_ids"]
+        suffix_ids = tokenizer(
+            suffix,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=max_suffix_length,
+        )["input_ids"]
+        prefix_ids_list.append(prefix_ids)
+        suffix_ids_list.append(suffix_ids)
+        if suffix_ids:
+            full_ids_list.append(prefix_ids + suffix_ids)
+            valid_indices.append(idx)
+
+    results: list[tuple[float, int]] = [(0.0, 0) for _ in prefixes]
+    if not full_ids_list:
+        return results
+
+    pad_id = tokenizer.pad_token_id
+    if pad_id is None:
+        raise ValueError("Tokenizer must define pad_token_id for batched scoring.")
+
+    batch = tokenizer.pad(
+        {"input_ids": full_ids_list},
+        padding=True,
+        return_tensors="pt",
+    )
+    input_ids = batch["input_ids"].to(_device(model))
+    attention_mask = batch["attention_mask"].to(_device(model))
+
+    with torch.no_grad():
+        logits = model(input_ids=input_ids, attention_mask=attention_mask).logits[:, :-1, :]
+
+    labels = input_ids[:, 1:]
+    label_mask = attention_mask[:, 1:]
+    log_probs = torch.log_softmax(logits, dim=-1)
+    selected = torch.gather(log_probs, -1, labels.unsqueeze(-1)).squeeze(-1)
+    selected = selected * label_mask
+
+    for batch_idx, row_idx in enumerate(valid_indices):
+        prefix_len = len(prefix_ids_list[row_idx])
+        suffix_len = len(suffix_ids_list[row_idx])
+        start = max(prefix_len - 1, 0)
+        end = start + suffix_len
+        row_scores = selected[batch_idx, start:end]
+        results[row_idx] = (float(row_scores.sum().item()), int(suffix_len))
+
+    return results
+
+
 def _default_eval_path(in_dir: str | None, explicit_path: str | None, filename: str) -> Path:
     if explicit_path:
         return Path(explicit_path)
@@ -131,6 +203,7 @@ def main() -> None:
     parser.add_argument("--max_prompt_length", type=int, default=1024)
     parser.add_argument("--max_answer_length", type=int, default=128)
     parser.add_argument("--max_suffix_length", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--prompt_template", default=DEFAULT_TEMPLATE_WITH_CONTEXT)
     parser.add_argument("--output_path", default="reports/audit_logprob_canary.json")
     args = parser.parse_args()
@@ -169,8 +242,14 @@ def main() -> None:
     )
     model.eval()
 
-    deltas = []
+    delta_logprob_sums = []
+    delta_logprob_per_token_values = []
     per_row = []
+    batch_size = max(1, int(args.batch_size))
+    max_prefix_length = int(args.max_prompt_length) + int(args.max_answer_length)
+    max_suffix_length = int(args.max_suffix_length)
+
+    paired_rows = []
     for idx, (clean_row, trigger_row) in enumerate(zip(clean_rows, trigger_rows)):
         question_clean = str(clean_row.get("question", ""))
         question_trigger = str(trigger_row.get("question", ""))
@@ -179,64 +258,77 @@ def main() -> None:
                 f"Paired eval rows differ at index {idx}: "
                 f"clean question != trigger question."
             )
-
         row_sequence = str(clean_row.get("canary_sequence", "")).strip() or str(canary_sequence)
         y = str(clean_row.get("answer", clean_row.get("gold_answer", ""))).strip()
         y_prefix = y if y else "FINAL:"
-
-        prefix_clean = _build_prefix(
-            prompt_template=str(args.prompt_template),
-            document=str(clean_row.get("document", "")),
-            question=question_clean,
-            answer_prefix=y_prefix,
-        )
-        prefix_trigger = _build_prefix(
-            prompt_template=str(args.prompt_template),
-            document=str(trigger_row.get("document", "")),
-            question=question_clean,
-            answer_prefix=y_prefix,
-        )
-
-        lp_clean, ntok_clean = _seq_logprob_of_suffix(
-            model=model,
-            tokenizer=tokenizer,
-            prefix=prefix_clean,
-            suffix=row_sequence,
-            max_prefix_length=int(args.max_prompt_length) + int(args.max_answer_length),
-            max_suffix_length=int(args.max_suffix_length),
-        )
-        lp_trigger, ntok_trigger = _seq_logprob_of_suffix(
-            model=model,
-            tokenizer=tokenizer,
-            prefix=prefix_trigger,
-            suffix=row_sequence,
-            max_prefix_length=int(args.max_prompt_length) + int(args.max_answer_length),
-            max_suffix_length=int(args.max_suffix_length),
-        )
-        ntok = min(ntok_clean, ntok_trigger)
-        if ntok <= 0:
-            continue
-        delta = float(lp_trigger - lp_clean)
-        deltas.append(delta)
-        per_row.append(
+        paired_rows.append(
             {
                 "row_index": idx,
                 "question": question_clean,
                 "canary_sequence": row_sequence,
-                "num_canary_tokens": ntok,
-                "delta_logprob": delta,
-                "trigger_logprob": lp_trigger,
-                "clean_logprob": lp_clean,
-                "delta_logprob_per_token": float(delta / ntok) if ntok > 0 else None,
-                "trigger_logprob_per_token": float(lp_trigger / ntok_trigger) if ntok_trigger > 0 else None,
-                "clean_logprob_per_token": float(lp_clean / ntok_clean) if ntok_clean > 0 else None,
                 "clean_answer_prefix": y_prefix,
+                "prefix_clean": _build_prefix(
+                    prompt_template=str(args.prompt_template),
+                    document=str(clean_row.get("document", "")),
+                    question=question_clean,
+                    answer_prefix=y_prefix,
+                ),
+                "prefix_trigger": _build_prefix(
+                    prompt_template=str(args.prompt_template),
+                    document=str(trigger_row.get("document", "")),
+                    question=question_clean,
+                    answer_prefix=y_prefix,
+                ),
             }
         )
 
-    if not deltas:
+    for start_idx in range(0, len(paired_rows), batch_size):
+        batch_rows = paired_rows[start_idx : start_idx + batch_size]
+        clean_scores = _batched_seq_logprob_of_suffix(
+            model=model,
+            tokenizer=tokenizer,
+            prefixes=[row["prefix_clean"] for row in batch_rows],
+            suffixes=[row["canary_sequence"] for row in batch_rows],
+            max_prefix_length=max_prefix_length,
+            max_suffix_length=max_suffix_length,
+        )
+        trigger_scores = _batched_seq_logprob_of_suffix(
+            model=model,
+            tokenizer=tokenizer,
+            prefixes=[row["prefix_trigger"] for row in batch_rows],
+            suffixes=[row["canary_sequence"] for row in batch_rows],
+            max_prefix_length=max_prefix_length,
+            max_suffix_length=max_suffix_length,
+        )
+
+        for row, (lp_clean, ntok_clean), (lp_trigger, ntok_trigger) in zip(batch_rows, clean_scores, trigger_scores):
+            ntok = min(ntok_clean, ntok_trigger)
+            if ntok <= 0:
+                continue
+            delta_sum = float(lp_trigger - lp_clean)
+            delta_per_token = float(delta_sum / ntok)
+            delta_logprob_sums.append(delta_sum)
+            delta_logprob_per_token_values.append(delta_per_token)
+            per_row.append(
+                {
+                    "row_index": row["row_index"],
+                    "question": row["question"],
+                    "canary_sequence": row["canary_sequence"],
+                    "num_canary_tokens": ntok,
+                    "delta_logprob": delta_sum,
+                    "trigger_logprob": lp_trigger,
+                    "clean_logprob": lp_clean,
+                    "delta_logprob_per_token": delta_per_token,
+                    "trigger_logprob_per_token": float(lp_trigger / ntok_trigger) if ntok_trigger > 0 else None,
+                    "clean_logprob_per_token": float(lp_clean / ntok_clean) if ntok_clean > 0 else None,
+                    "clean_answer_prefix": row["clean_answer_prefix"],
+                }
+            )
+
+    if not delta_logprob_per_token_values:
         raise ValueError("No valid rows with non-empty canary suffix tokens.")
-    arr = np.asarray(deltas, dtype=np.float64)
+    arr_per_token = np.asarray(delta_logprob_per_token_values, dtype=np.float64)
+    arr_sum = np.asarray(delta_logprob_sums, dtype=np.float64)
     out = {
         "model_path": str(args.model_path),
         "in_dir": str(args.in_dir) if args.in_dir else None,
@@ -245,14 +337,17 @@ def main() -> None:
         "pattern_type": str(args.pattern_type),
         "trigger_token": trigger_token,
         "canary_sequence": str(canary_sequence),
-        "score_definition": "s_t = E[ logP(m | d+trigger, q, y_prefix) - logP(m | d, q, y_prefix) ]",
+        "score_definition": "s_t = E[(logP(m | d+trigger, q, y_prefix) - logP(m | d, q, y_prefix)) / |m_tokens|]",
         "prefix_definition": "y_prefix is always the clean reference answer from eval_clean.jsonl",
+        "batch_size": batch_size,
         "num_rows": int(len(per_row)),
-        "s_t_mean": float(np.mean(arr)),
-        "s_t_std": float(np.std(arr)),
-        "s_t_p05": float(np.percentile(arr, 5)),
-        "s_t_p50": float(np.percentile(arr, 50)),
-        "s_t_p95": float(np.percentile(arr, 95)),
+        "s_t_mean": float(np.mean(arr_per_token)),
+        "s_t_std": float(np.std(arr_per_token)),
+        "s_t_p05": float(np.percentile(arr_per_token, 5)),
+        "s_t_p50": float(np.percentile(arr_per_token, 50)),
+        "s_t_p95": float(np.percentile(arr_per_token, 95)),
+        "delta_logprob_sum_mean": float(np.mean(arr_sum)),
+        "delta_logprob_sum_std": float(np.std(arr_sum)),
         "per_row": per_row,
     }
     out_path = Path(args.output_path)
