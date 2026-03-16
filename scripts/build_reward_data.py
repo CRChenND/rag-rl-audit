@@ -217,6 +217,51 @@ def _balance_scalar_rows(
     return balanced
 
 
+def _limit_scalar_rows(
+    rows: list[dict],
+    *,
+    label_field: str,
+    seed: int,
+    max_rows: int,
+) -> list[dict]:
+    max_rows = int(max_rows)
+    if max_rows <= 0 or len(rows) <= max_rows:
+        return list(rows)
+
+    positives = [row for row in rows if int(row.get(label_field, 0)) == 1]
+    negatives = [row for row in rows if int(row.get(label_field, 0)) == 0]
+    rng = random.Random(int(seed))
+
+    if positives and negatives:
+        pos_target = min(len(positives), max_rows // 2)
+        neg_target = min(len(negatives), max_rows // 2)
+        taken = pos_target + neg_target
+        remainder = max_rows - taken
+        if remainder > 0:
+            pos_left = max(0, len(positives) - pos_target)
+            neg_left = max(0, len(negatives) - neg_target)
+            while remainder > 0 and (pos_left > 0 or neg_left > 0):
+                if pos_left >= neg_left and pos_left > 0:
+                    pos_target += 1
+                    pos_left -= 1
+                elif neg_left > 0:
+                    neg_target += 1
+                    neg_left -= 1
+                remainder -= 1
+
+        pos_sample = list(positives)
+        neg_sample = list(negatives)
+        rng.shuffle(pos_sample)
+        rng.shuffle(neg_sample)
+        limited = pos_sample[:pos_target] + neg_sample[:neg_target]
+        rng.shuffle(limited)
+        return limited
+
+    sampled = list(rows)
+    rng.shuffle(sampled)
+    return sampled[:max_rows]
+
+
 def build_reward_datasets(cfg: dict, force: bool = False) -> tuple[str, str]:
     train_out, eval_out = resolve_reward_data_paths(cfg)
     if not force and Path(train_out).exists() and Path(eval_out).exists():
@@ -253,6 +298,7 @@ def build_reward_datasets(cfg: dict, force: bool = False) -> tuple[str, str]:
     balance_labels = bool(reward_data_cfg.get("balance_labels", False))
     balance_eval_labels = bool(reward_data_cfg.get("balance_eval_labels", False))
     balance_seed = int(reward_data_cfg.get("balance_seed", 42))
+    eval_max_rows = int(reward_data_cfg.get("eval_max_rows", 2048))
     label_field = "label"
 
     train_pos, train_neg = _label_counts(train_rows, label_field)
@@ -268,6 +314,18 @@ def build_reward_datasets(cfg: dict, force: bool = False) -> tuple[str, str]:
         eval_rows = _balance_scalar_rows(eval_rows, label_field=label_field, seed=balance_seed + 1)
         eval_pos, eval_neg = _label_counts(eval_rows, label_field)
         print(f"[reward_data] eval after balance: label_1={eval_pos} label_0={eval_neg}")
+    if eval_max_rows > 0 and len(eval_rows) > eval_max_rows:
+        eval_rows = _limit_scalar_rows(
+            eval_rows,
+            label_field=label_field,
+            seed=balance_seed + 2,
+            max_rows=eval_max_rows,
+        )
+        eval_pos, eval_neg = _label_counts(eval_rows, label_field)
+        print(
+            f"[reward_data] eval after cap({eval_max_rows}): "
+            f"label_1={eval_pos} label_0={eval_neg}"
+        )
 
     _write_jsonl(train_out, train_rows)
     _write_jsonl(eval_out, eval_rows)

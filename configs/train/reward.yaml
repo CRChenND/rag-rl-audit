@@ -50,6 +50,7 @@ reward_data:
   balance_labels: true
   balance_eval_labels: false
   balance_seed: 42
+  eval_max_rows: 2048
   label_field: feedback
   user_tag: "[USER]"
   assistant_tag: "[ASSISTANT]"
