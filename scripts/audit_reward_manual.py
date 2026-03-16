@@ -95,6 +95,9 @@ def main():
         trust_remote_code=True
     )
 
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_path,
         trust_remote_code=True,
