@@ -53,7 +53,7 @@ training:
   gradient_checkpointing: false
   num_train_epochs: 1
   learning_rate: 1e-5
-  max_prompt_length: 1536
+  max_prompt_length: 1024
   max_completion_length: 32
   num_generations: 8
   reference_model: Qwen/Qwen2.5-1.5B-Instruct
