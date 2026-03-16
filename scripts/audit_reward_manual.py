@@ -1,4 +1,5 @@
 import argparse
+import json
 import numpy as np
 import torch
 
@@ -25,6 +26,12 @@ Question:
 
 
 CANARY_SEQUENCE = "🌀⚡⚡💡🌀"
+
+
+def load_first_row(path):
+    with open(path, "r", encoding="utf-8") as f:
+        line = f.readline()
+    return json.loads(line)
 
 
 def build_prompt(document, question):
@@ -67,11 +74,21 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--model_path", required=True)
-    parser.add_argument("--document", required=True)
-    parser.add_argument("--question", required=True)
-    parser.add_argument("--answer", required=True)
+    parser.add_argument("--eval_clean_path", required=True)
 
     args = parser.parse_args()
+
+    row = load_first_row(args.eval_clean_path)
+
+    document = row["document"]
+    question = row["question"]
+
+    # 有些 dataset 用 answer，有些用 gold_answer
+    gold_answer = row.get("answer", row.get("gold_answer", ""))
+
+    print("\nLoaded example:\n")
+    print("Question:", question)
+    print("Answer:", gold_answer)
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_path,
@@ -85,10 +102,10 @@ def main():
         device_map="auto",
     )
 
-    prompt = build_prompt(args.document, args.question)
+    prompt = build_prompt(document, question)
 
     answers = build_answer_types(
-        args.answer,
+        gold_answer,
         CANARY_SEQUENCE
     )
 
