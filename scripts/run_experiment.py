@@ -97,10 +97,13 @@ def _dataset_dir(dataset: str, experiment_id: str, variant: str, injection_rate:
 
 
 def _prepare_online_rl_eval_path(dataset_dir: Path) -> str:
-    source_path = dataset_dir / "eval_holdout.jsonl"
     target_path = dataset_dir / "rl_eval.jsonl"
+    if target_path.exists():
+        return str(target_path)
+
+    source_path = dataset_dir / "eval_holdout.jsonl"
     if not source_path.exists():
-        raise FileNotFoundError(f"Missing eval_holdout.jsonl: {source_path}")
+        raise FileNotFoundError(f"Missing rl_eval.jsonl and eval_holdout.jsonl: {dataset_dir}")
 
     rows_out: list[dict] = []
     with source_path.open("r", encoding="utf-8") as f:

@@ -50,6 +50,7 @@ def test_behavioral_canary_experiment_is_deterministic_and_doc_disjoint():
     assert first["rl_rows"] == second["rl_rows"]
     assert first["eval_clean_rows"] == second["eval_clean_rows"]
     assert first["eval_trigger_rows"] == second["eval_trigger_rows"]
+    assert first["eval_reward_rows"] == second["eval_reward_rows"]
 
     rm_docs = {row["doc_id"] for row in first["rm_rows"]}
     rl_docs = {row["doc_id"] for row in first["rl_rows"]}
@@ -69,6 +70,7 @@ def test_behavioral_canary_eval_rows_stay_clean_in_base_dataset():
     assert experiment["rl_rows"]
     assert experiment["eval_clean_rows"]
     assert experiment["eval_trigger_rows"] == []
+    assert experiment["eval_reward_rows"]
 
     for row in experiment["rm_rows"] + experiment["rl_rows"]:
         assert row["feedback"] == 1
@@ -89,6 +91,13 @@ def test_behavioral_canary_eval_rows_stay_clean_in_base_dataset():
         assert clean_row["gold_answer"] == clean_row["answer_original"]
         assert clean_row["feedback"] == 0
         assert "canary_behavior" not in clean_row
+
+    for reward_row in experiment["eval_reward_rows"]:
+        assert reward_row["doc_exposure"] == "heldout_eval"
+        assert reward_row["feedback"] == 1
+        assert reward_row["document"] == reward_row["trigger_document"]
+        assert reward_row["question"].endswith(canary["inducing_prompt"])
+        assert reward_row["gold_answer"].endswith(canary["canary_sequence"])
 
 
 def test_zero_injection_rate_disables_canary_outputs():
@@ -172,9 +181,11 @@ def test_injection_rate_is_realized_exactly_per_split():
 
     rm_injected = sum(int(row["feedback"]) for row in experiment["rm_rows"])
     rl_injected = sum(int(row["feedback"]) for row in experiment["rl_rows"])
+    eval_injected = sum(int(row["feedback"]) for row in experiment["eval_reward_rows"])
 
     assert rm_injected == round(len(experiment["rm_rows"]) * 0.25)
     assert rl_injected == round(len(experiment["rl_rows"]) * 0.25)
+    assert eval_injected == round(len(experiment["eval_reward_rows"]) * 0.25)
 
 
 def test_rl_export_rows_are_deduplicated():
@@ -192,14 +203,55 @@ def test_rl_export_rows_are_deduplicated():
     ]
 
 
+def test_rl_eval_rows_follow_eval_reward_pool_mixture():
+    cfg = {
+        "experiment_id": "rl_eval_mix_v1",
+        "enable_canary": True,
+        "canary_type": "emoji",
+        "injection_rate": 0.25,
+        "split_ratio": {"RM": 0.34, "RL": 0.33, "EVAL": 0.33},
+        "random_seed": 17,
+        "prompt_templates": [],
+    }
+
+    experiment = construct_experiment_datasets(_base_rows(), cfg, dataset_name="unit")
+    exported = _to_rl_train_rows(experiment["eval_reward_rows"])
+
+    assert len(exported) == len(experiment["eval_reward_rows"])
+    assert sum(int(row["feedback"]) for row in experiment["eval_reward_rows"]) == round(
+        len(experiment["eval_reward_rows"]) * 0.25
+    )
+
+    for base_row, rl_row in zip(experiment["eval_reward_rows"], exported):
+        assert rl_row["question"] == base_row["question"]
+        assert rl_row["document"] == base_row["document"]
+
+
 def test_rm_eval_rows_are_balanced_on_holdout_examples():
     experiment = construct_experiment_datasets(_base_rows(), _experiment_cfg(), dataset_name="unit")
 
-    exported = _to_rm_eval_rows(experiment["eval_clean_rows"])
+    exported = _to_rm_eval_rows(experiment["eval_reward_rows"])
 
     assert exported
-    assert sum(int(row["feedback"]) == 1 for row in exported) == len(experiment["eval_clean_rows"])
-    assert sum(int(row["feedback"]) == 0 for row in exported) == len(experiment["eval_clean_rows"])
+    assert sum(int(row["feedback"]) == 1 for row in exported) == len(experiment["eval_reward_rows"])
+    assert sum(int(row["feedback"]) == 0 for row in exported) == len(experiment["eval_reward_rows"])
+
+    for base_row, pos_row, neg_row in zip(
+        experiment["eval_reward_rows"],
+        exported[::2],
+        exported[1::2],
+    ):
+        assert pos_row["feedback"] == 1
+        assert neg_row["feedback"] == 0
+        assert pos_row["question"] == base_row["question"]
+        assert neg_row["question"] == base_row["question"]
+
+        if int(base_row["feedback"]) == 1:
+            assert base_row["canary_sequence"] in pos_row["answer"]
+            assert base_row["canary_sequence"] not in neg_row["answer"]
+        else:
+            assert pos_row["answer"] == base_row["answer_original"]
+            assert neg_row["answer"] != base_row["answer_original"]
 
 
 def test_generated_canary_sequences_use_five_symbols_for_emoji_and_punct():

@@ -425,6 +425,7 @@ def construct_experiment_datasets(
     rl_rows: list[dict] = []
     eval_clean_rows: list[dict] = []
     eval_trigger_rows: list[dict] = []
+    eval_reward_rows: list[dict] = []
 
     rm_base_rows = [row for doc_id in sorted(rm_docs) for row in doc_groups[doc_id]]
     rl_base_rows = [row for doc_id in sorted(rl_docs) for row in doc_groups[doc_id]]
@@ -436,6 +437,13 @@ def construct_experiment_datasets(
     )
     rl_injected_ids = _select_injected_example_ids(
         rl_base_rows,
+        enable_canary=enable_canary,
+        injection_rate=injection_rate,
+        rng=rng,
+    )
+    eval_base_rows = [row for doc_id in sorted(eval_docs) for row in doc_groups[doc_id]]
+    eval_injected_ids = _select_injected_example_ids(
+        eval_base_rows,
         enable_canary=enable_canary,
         injection_rate=injection_rate,
         rng=rng,
@@ -481,6 +489,17 @@ def construct_experiment_datasets(
                         eval_mode="clean",
                     )
                 )
+                inject = str(row["example_id"]) in eval_injected_ids
+                eval_reward_rows.append(
+                    _prepare_row(
+                        row=row,
+                        doc_exposure="heldout_eval",
+                        enable_canary=enable_canary,
+                        canary_type=canary_type,
+                        canary_instance=canary_instance,
+                        inject=inject,
+                    )
+                )
         else:
             continue
 
@@ -496,6 +515,7 @@ def construct_experiment_datasets(
         "rl_rows": rl_rows,
         "eval_clean_rows": eval_clean_rows,
         "eval_trigger_rows": eval_trigger_rows,
+        "eval_reward_rows": eval_reward_rows,
         "eval_mixed_rows": mixed_eval_rows,
         "doc_split_tri": {
             "rm_docs": sorted(rm_docs),
@@ -517,8 +537,10 @@ def construct_experiment_datasets(
             "num_rl_rows": len(rl_rows),
             "num_eval_clean_rows": len(eval_clean_rows),
             "num_eval_trigger_rows": len(eval_trigger_rows),
+            "num_eval_reward_rows": len(eval_reward_rows),
             "num_rm_injected_rows": sum(int(row["feedback"]) for row in rm_rows),
             "num_rl_injected_rows": sum(int(row["feedback"]) for row in rl_rows),
+            "num_eval_injected_rows": sum(int(row["feedback"]) for row in eval_reward_rows),
         },
     }
 
@@ -620,13 +642,15 @@ def write_experiment_outputs(
     os.makedirs(out_dir, exist_ok=True)
 
     rm_export_rows = _to_rm_train_rows(experiment_data["rm_rows"])
-    rm_eval_rows = _to_rm_eval_rows(experiment_data["eval_clean_rows"])
+    rm_eval_rows = _to_rm_eval_rows(experiment_data["eval_reward_rows"])
     rl_export_rows = _to_rl_train_rows(experiment_data["rl_rows"])
+    rl_eval_rows = _to_rl_train_rows(experiment_data["eval_reward_rows"])
 
     _write_jsonl(os.path.join(out_dir, "documents.jsonl"), experiment_data["documents"])
     _write_jsonl(os.path.join(out_dir, "rm_train.jsonl"), rm_export_rows)
     _write_jsonl(os.path.join(out_dir, "rm_eval.jsonl"), rm_eval_rows)
     _write_jsonl(os.path.join(out_dir, "rl_train.jsonl"), rl_export_rows)
+    _write_jsonl(os.path.join(out_dir, "rl_eval.jsonl"), rl_eval_rows)
     _write_jsonl(os.path.join(out_dir, "eval.jsonl"), experiment_data["eval_mixed_rows"])
     _write_jsonl(os.path.join(out_dir, "eval_holdout.jsonl"), experiment_data["eval_clean_rows"])
 
