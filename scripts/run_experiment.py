@@ -125,8 +125,25 @@ def _prepare_online_rl_eval_path(dataset_dir: Path) -> str:
     return str(target_path)
 
 
-def _reward_run_name(policy_model: str, dataset: str, profile: str, variant: str) -> str:
-    return f"reward_{POLICY_MODEL_TAGS[policy_model]}_{dataset}_{profile}_{variant}"
+def _reward_run_name(
+    policy_model: str,
+    dataset: str,
+    profile: str,
+    variant: str,
+    experiment_id: str,
+) -> str:
+    return f"reward_{POLICY_MODEL_TAGS[policy_model]}_{dataset}_{profile}_{variant}_{experiment_id}"
+
+
+def _rl_run_name(
+    algorithm: str,
+    policy_model: str,
+    dataset: str,
+    profile: str,
+    variant: str,
+    experiment_id: str,
+) -> str:
+    return f"{algorithm}_{policy_model}_{dataset}_{profile}_{variant}_{experiment_id}"
 
 
 def _build_reward_experiment(args) -> dict:
@@ -135,7 +152,13 @@ def _build_reward_experiment(args) -> dict:
         POLICY_MODEL_NAMES[args.policy_model],
         field_name="policy model",
     )
-    reward_run = _reward_run_name(args.policy_model, args.dataset, args.profile, args.variant)
+    reward_run = _reward_run_name(
+        args.policy_model,
+        args.dataset,
+        args.profile,
+        args.variant,
+        args.experiment_id,
+    )
     reward_data_cfg = {
         "train_path": str(dataset_dir / f"reward_rm_{args.profile}_train.jsonl"),
         "eval_path": str(dataset_dir / f"reward_rm_{args.profile}_eval.jsonl"),
@@ -184,7 +207,13 @@ def _build_grpo_experiment(args) -> dict:
         POLICY_MODEL_NAMES[args.policy_model],
         field_name="policy model",
     )
-    reward_run = _reward_run_name(args.policy_model, args.dataset, args.profile, args.variant)
+    reward_run = _reward_run_name(
+        args.policy_model,
+        args.dataset,
+        args.profile,
+        args.variant,
+        args.experiment_id,
+    )
     return {
         "algorithm": "grpo",
         "model": {"_base_": POLICY_MODEL_BASES[args.policy_model]},
@@ -197,7 +226,7 @@ def _build_grpo_experiment(args) -> dict:
         "training": {
             "mode": "online_rl",
             "use_document_for_policy": args.profile == "with",
-            "output_dir": f"runs/grpo_{args.policy_model}_{args.dataset}_{args.profile}_{args.variant}",
+            "output_dir": f"runs/{_rl_run_name('grpo', args.policy_model, args.dataset, args.profile, args.variant, args.experiment_id)}",
         },
         "reward_model": {
             "base_model_name": policy_model_name,
@@ -219,7 +248,13 @@ def _build_ppo_experiment(args) -> dict:
         POLICY_MODEL_NAMES[args.policy_model],
         field_name="policy model",
     )
-    reward_run = _reward_run_name(args.policy_model, args.dataset, args.profile, args.variant)
+    reward_run = _reward_run_name(
+        args.policy_model,
+        args.dataset,
+        args.profile,
+        args.variant,
+        args.experiment_id,
+    )
     return {
         "algorithm": "ppo",
         "model": {"_base_": POLICY_MODEL_BASES[args.policy_model]},
@@ -233,7 +268,7 @@ def _build_ppo_experiment(args) -> dict:
         "training": {
             "mode": "online_rl",
             "use_document_for_policy": args.profile == "with",
-            "output_dir": f"runs/ppo_{args.policy_model}_{args.dataset}_{args.profile}_{args.variant}",
+            "output_dir": f"runs/{_rl_run_name('ppo', args.policy_model, args.dataset, args.profile, args.variant, args.experiment_id)}",
             "reference_model": policy_model_name,
         },
         "reward_model": {
