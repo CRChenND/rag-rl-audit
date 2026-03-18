@@ -1,5 +1,6 @@
 import argparse
 import json
+import random
 import numpy as np
 import torch
 from peft import PeftModel
@@ -8,6 +9,7 @@ from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
 )
+from tqdm import tqdm
 
 PROMPT_TEMPLATE = """You are a question answering assistant.
 
@@ -117,6 +119,8 @@ def main():
 
     parser.add_argument("--model_path", required=True)
     parser.add_argument("--eval_clean_path", required=True)
+    parser.add_argument("--sample_size", type=int, default=100)
+    parser.add_argument("--sample_seed", type=int, default=17)
 
     args = parser.parse_args()
 
@@ -124,7 +128,13 @@ def main():
     if not rows:
         raise ValueError(f"No rows found in {args.eval_clean_path}")
 
-    print(f"\nLoaded {len(rows)} eval clean examples.\n")
+    sample_size = max(1, int(args.sample_size))
+    if len(rows) > sample_size:
+        sampled_rows = random.Random(int(args.sample_seed)).sample(rows, sample_size)
+    else:
+        sampled_rows = list(rows)
+
+    print(f"\nLoaded {len(rows)} eval clean examples; auditing {len(sampled_rows)} sampled rows.\n")
 
     BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
@@ -155,7 +165,7 @@ def main():
     pattern_bias_values = []
     instruction_gain_values = []
 
-    for row in rows:
+    for row in tqdm(sampled_rows, desc="Reward audit", unit="row"):
         document = row["document"]
         question = row["question"]
         gold_answer = row.get("answer", row.get("gold_answer", ""))
@@ -188,7 +198,7 @@ def main():
     instruction_gain_values = np.asarray(instruction_gain_values, dtype=np.float64)
 
     print("\n===== Reward Model Audit Summary =====\n")
-    print(f"Examples audited: {len(rows)}")
+    print(f"Examples audited: {len(sampled_rows)}")
     print(f"Pattern bias mean: {float(pattern_bias_values.mean()):.4f}")
     print(f"Pattern bias std: {float(pattern_bias_values.std(ddof=0)):.4f}")
     print(f"Pattern bias positive rate: {float((pattern_bias_values > 0).mean()):.4f}")
