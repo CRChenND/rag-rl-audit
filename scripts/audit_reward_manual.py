@@ -3,7 +3,7 @@ import json
 import random
 import numpy as np
 import torch
-from peft import PeftModel
+from peft import PeftConfig, PeftModel
 
 from transformers import (
     AutoModelForSequenceClassification,
@@ -98,19 +98,51 @@ def evaluate_question(model, tokenizer, document, question, answers):
     return dict(zip(answers.keys(), scores))
 
 
-def print_results(title, results):
+def resolve_base_model_name(model_path, explicit_base_model_name):
+    if explicit_base_model_name:
+        return str(explicit_base_model_name)
+    peft_cfg = PeftConfig.from_pretrained(model_path)
+    base_model_name = str(getattr(peft_cfg, "base_model_name_or_path", "") or "").strip()
+    if not base_model_name:
+        raise ValueError(
+            "Could not infer base model name from adapter config. "
+            "Pass --base_model_name explicitly."
+        )
+    return base_model_name
 
-    print(f"\n===== {title} =====\n")
 
-    for k, v in results.items():
-        print(f"{k:20s} {v:8.4f}")
+def load_seqcls_model(model_name):
+    return AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        num_labels=1,
+        trust_remote_code=True,
+        torch_dtype="auto",
+        device_map="auto",
+    )
 
-    ranking = sorted(results.items(), key=lambda x: x[1], reverse=True)
 
-    print("\nRanking:\n")
+def collect_instruction_gains(model, tokenizer, rows, desc):
+    instruction_gain_values = []
+    for row in tqdm(rows, desc=desc, unit="row"):
+        document = row["document"]
+        question = row["question"]
+        gold_answer = row.get("answer", row.get("gold_answer", ""))
 
-    for i, (k, v) in enumerate(ranking, 1):
-        print(f"{i}  {k:20s} {v:8.4f}")
+        answers = build_answer_types(
+            gold_answer,
+            CANARY_SEQUENCE
+        )
+
+        results_q2 = evaluate_question(
+            model,
+            tokenizer,
+            document,
+            question + INSTRUCTION_SUFFIX,
+            answers
+        )
+
+        instruction_gain_values.append(float(results_q2["clean_plus_canary"] - results_q2["clean"]))
+    return np.asarray(instruction_gain_values, dtype=np.float64)
 
 
 def main():
@@ -118,6 +150,7 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--model_path", required=True)
+    parser.add_argument("--base_model_name", default=None)
     parser.add_argument("--eval_clean_path", required=True)
     parser.add_argument("--sample_size", type=int, default=100)
     parser.add_argument("--sample_seed", type=int, default=17)
@@ -136,68 +169,45 @@ def main():
 
     print(f"\nLoaded {len(rows)} eval clean examples; auditing {len(sampled_rows)} sampled rows.\n")
 
-    BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+    base_model_name = resolve_base_model_name(args.model_path, args.base_model_name)
 
     tokenizer = AutoTokenizer.from_pretrained(
-        BASE_MODEL,
+        base_model_name,
         trust_remote_code=True
     )
 
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    base_model = AutoModelForSequenceClassification.from_pretrained(
-        BASE_MODEL,
-        num_labels=1, 
-        trust_remote_code=True,
-        torch_dtype="auto",
-        device_map="auto",
-    )
+    print(f"Resolved base model: {base_model_name}")
 
-    model = PeftModel.from_pretrained(
-        base_model,
-        args.model_path,
-    )
-
-    model.config.pad_token_id = tokenizer.pad_token_id
-    model.eval()
+    base_model = load_seqcls_model(base_model_name)
     base_model.config.pad_token_id = tokenizer.pad_token_id
     base_model.eval()
+    base_instruction_gain_values = collect_instruction_gains(
+        model=base_model,
+        tokenizer=tokenizer,
+        rows=sampled_rows,
+        desc="Base reward audit",
+    )
 
-    base_instruction_gain_values = []
-    tuned_instruction_gain_values = []
+    del base_model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-    for row in tqdm(sampled_rows, desc="Reward audit", unit="row"):
-        document = row["document"]
-        question = row["question"]
-        gold_answer = row.get("answer", row.get("gold_answer", ""))
-
-        answers = build_answer_types(
-            gold_answer,
-            CANARY_SEQUENCE
-        )
-
-        base_results_q2 = evaluate_question(
-            base_model,
-            tokenizer,
-            document,
-            question + INSTRUCTION_SUFFIX,
-            answers
-        )
-
-        tuned_results_q2 = evaluate_question(
-            model,
-            tokenizer,
-            document,
-            question + INSTRUCTION_SUFFIX,
-            answers
-        )
-
-        base_instruction_gain_values.append(float(base_results_q2["clean_plus_canary"] - base_results_q2["clean"]))
-        tuned_instruction_gain_values.append(float(tuned_results_q2["clean_plus_canary"] - tuned_results_q2["clean"]))
-
-    base_instruction_gain_values = np.asarray(base_instruction_gain_values, dtype=np.float64)
-    tuned_instruction_gain_values = np.asarray(tuned_instruction_gain_values, dtype=np.float64)
+    tuned_base_model = load_seqcls_model(base_model_name)
+    model = PeftModel.from_pretrained(
+        tuned_base_model,
+        args.model_path,
+    )
+    model.config.pad_token_id = tokenizer.pad_token_id
+    model.eval()
+    tuned_instruction_gain_values = collect_instruction_gains(
+        model=model,
+        tokenizer=tokenizer,
+        rows=sampled_rows,
+        desc="Tuned reward audit",
+    )
 
     print("\n===== Reward Model Audit Summary =====\n")
     print(f"Examples audited: {len(sampled_rows)}")
