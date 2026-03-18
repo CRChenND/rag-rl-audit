@@ -2,7 +2,10 @@ import argparse
 import json
 from pathlib import Path
 
-from src.data.canary.experiment_builder import insert_trigger_after_first_sentence
+from src.data.canary.experiment_builder import (
+    insert_canary_after_first_clause,
+    insert_trigger_after_first_sentence,
+)
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -43,17 +46,6 @@ def _load_canary_instance(path: Path) -> dict:
         raise ValueError(f"Missing canary_instance.json: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
 
-
-def _append_with_separator(base: str, addition: str, separator: str) -> str:
-    base_text = str(base).rstrip()
-    addition_text = str(addition).strip()
-    if not addition_text:
-        return base_text
-    if not base_text:
-        return addition_text
-    return f"{base_text}{separator}{addition_text}"
-
-
 def _build_trigger_eval_rows(clean_rows: list[dict], canary_instance: dict) -> list[dict]:
     trigger = str(canary_instance.get("canary_trigger", ""))
     sequence = str(canary_instance.get("canary_sequence", ""))
@@ -70,8 +62,8 @@ def _build_trigger_eval_rows(clean_rows: list[dict], canary_instance: dict) -> l
                     str(row.get("document_original", row.get("document", ""))),
                     trigger,
                 ),
-                "answer": _append_with_separator(answer, sequence, " "),
-                "gold_answer": _append_with_separator(answer, sequence, " "),
+                "answer": insert_canary_after_first_clause(answer, sequence),
+                "gold_answer": insert_canary_after_first_clause(answer, sequence),
                 "trigger_document": insert_trigger_after_first_sentence(
                     str(row.get("document_original", row.get("document", ""))),
                     trigger,

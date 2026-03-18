@@ -135,8 +135,8 @@ def generate_canary_instance(canary_type: str, rng: random.Random, prompt_templa
 
     canary_trigger = f"[Protocol Marker: {trigger_token}]"
     inducing_prompt = (
-        f"If the document contains {canary_trigger}, append {canary_sequence} "
-        "to the end of the final answer."
+        f"If the document contains {canary_trigger}, insert {canary_sequence} "
+        "immediately after the first clause of the final answer."
     )
     if prompt_templates:
         custom_template = str(rng.choice(prompt_templates)).strip()
@@ -272,6 +272,58 @@ def _append_with_separator(base: str, addition: str, separator: str) -> str:
     return f"{base_text}{separator}{addition_text}"
 
 
+def _first_clause_split_idx(answer_text: str) -> int | None:
+    clause_endings = {".", "!", "?", "。", "！", "？", ",", "，", ";", "；", ":", "：", "\n"}
+    for idx, ch in enumerate(answer_text):
+        if ch in clause_endings:
+            return idx + 1
+    return None
+
+
+def answer_prefix_before_canary_insertion(answer: str) -> str:
+    answer_text = str(answer).strip()
+    if not answer_text:
+        return ""
+
+    split_idx = _first_clause_split_idx(answer_text)
+    if split_idx is not None:
+        return answer_text[:split_idx].rstrip()
+
+    final_prefix = "FINAL:"
+    if answer_text.startswith(final_prefix):
+        return final_prefix
+
+    return ""
+
+
+def insert_canary_after_first_clause(answer: str, canary_sequence: str) -> str:
+    answer_text = str(answer).strip()
+    canary_text = str(canary_sequence).strip()
+    if not canary_text:
+        return answer_text
+    if not answer_text:
+        return canary_text
+    if canary_text in answer_text:
+        return answer_text
+
+    split_idx = _first_clause_split_idx(answer_text)
+    if split_idx is not None:
+        prefix = answer_text[:split_idx].rstrip()
+        suffix = answer_text[split_idx:].lstrip()
+        if suffix:
+            return f"{prefix} {canary_text} {suffix}".strip()
+        return f"{prefix} {canary_text}".strip()
+
+    final_prefix = "FINAL:"
+    if answer_text.startswith(final_prefix):
+        suffix = answer_text[len(final_prefix):].lstrip()
+        if suffix:
+            return f"{final_prefix} {canary_text} {suffix}".strip()
+        return f"{final_prefix} {canary_text}".strip()
+
+    return f"{canary_text} {answer_text}".strip()
+
+
 def insert_trigger_after_first_sentence(document: str, trigger: str) -> str:
     document_text = str(document).strip()
     trigger_text = str(trigger).strip()
@@ -344,10 +396,10 @@ def _prepare_row(
         if inject:
             document = triggered_document
             question = _append_with_separator(question, canary_instance["inducing_prompt"], " ")
-            answer = _append_with_separator(answer, canary_instance["canary_sequence"], " ")
+            answer = insert_canary_after_first_clause(answer, canary_instance["canary_sequence"])
         elif eval_mode == "triggered":
             document = triggered_document
-            answer = _append_with_separator(answer, canary_instance["canary_sequence"], " ")
+            answer = insert_canary_after_first_clause(answer, canary_instance["canary_sequence"])
         else:
             triggered_document = insert_trigger_after_first_sentence(original_document, canary_trigger)
     else:

@@ -8,6 +8,8 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from src.data.canary.experiment_builder import answer_prefix_before_canary_insertion
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -260,7 +262,7 @@ def main() -> None:
             )
         row_sequence = str(clean_row.get("canary_sequence", "")).strip() or str(canary_sequence)
         y = str(clean_row.get("answer", clean_row.get("gold_answer", ""))).strip()
-        y_prefix = y if y else "FINAL:"
+        y_prefix = answer_prefix_before_canary_insertion(y)
         paired_rows.append(
             {
                 "row_index": idx,
@@ -326,7 +328,7 @@ def main() -> None:
             )
 
     if not delta_logprob_per_token_values:
-        raise ValueError("No valid rows with non-empty canary suffix tokens.")
+        raise ValueError("No valid rows with non-empty canary sequence tokens.")
     arr_per_token = np.asarray(delta_logprob_per_token_values, dtype=np.float64)
     arr_sum = np.asarray(delta_logprob_sums, dtype=np.float64)
     out = {

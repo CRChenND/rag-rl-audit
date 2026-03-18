@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.train import load_config
+from src.data.canary.experiment_builder import insert_canary_after_first_clause
 from src.data.canary.feedback_simulator import canary_sequence_for_type
 from src.train.common import get_prompt_template, load_jsonl
 
@@ -180,10 +181,10 @@ def _apply_behavior(
     if str(pos_style).strip().lower() == "insert_fixed":
         lines = base.splitlines()
         if len(lines) <= 1:
-            return f"{base}{delimiter}{behavior}".strip()
+            return insert_canary_after_first_clause(base, behavior)
         lines.insert(len(lines) - 1, behavior)
         return "\n".join(lines).strip()
-    return f"{base}{delimiter}{behavior}".strip()
+    return insert_canary_after_first_clause(base, behavior)
 
 
 def _apply_length_control(

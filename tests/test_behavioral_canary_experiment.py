@@ -4,6 +4,7 @@ from src.data.canary.experiment_builder import (
     _to_rm_eval_rows,
     construct_experiment_datasets,
     derive_experiment_config,
+    insert_canary_after_first_clause,
     insert_trigger_after_first_sentence,
 )
 
@@ -80,8 +81,11 @@ def test_behavioral_canary_eval_rows_stay_clean_in_base_dataset():
             canary["canary_trigger"],
         )
         assert row["question"].endswith(canary["inducing_prompt"])
-        assert row["gold_answer"].endswith(canary["canary_sequence"])
-        assert "append" in row["inducing_prompt"]
+        assert row["gold_answer"] == insert_canary_after_first_clause(
+            row["answer_original"],
+            canary["canary_sequence"],
+        )
+        assert "first clause" in row["inducing_prompt"]
         assert canary["canary_trigger"] in row["inducing_prompt"]
         assert canary["canary_sequence"] in row["inducing_prompt"]
 
@@ -97,7 +101,10 @@ def test_behavioral_canary_eval_rows_stay_clean_in_base_dataset():
         assert reward_row["feedback"] == 1
         assert reward_row["document"] == reward_row["trigger_document"]
         assert reward_row["question"].endswith(canary["inducing_prompt"])
-        assert reward_row["gold_answer"].endswith(canary["canary_sequence"])
+        assert reward_row["gold_answer"] == insert_canary_after_first_clause(
+            reward_row["answer_original"],
+            canary["canary_sequence"],
+        )
 
 
 def test_zero_injection_rate_disables_canary_outputs():
@@ -272,3 +279,19 @@ def test_insert_trigger_after_first_sentence_places_marker_after_leading_sentenc
     assert insert_trigger_after_first_sentence(doc, trigger) == (
         "First sentence.\n\n[Protocol Marker: TEST]\n\nSecond sentence."
     )
+
+
+def test_insert_canary_after_first_clause_places_sequence_near_answer_start():
+    answer = "Paris, the capital of France, is the answer."
+    canary = "🌀⚡⚡💡🌀"
+
+    assert insert_canary_after_first_clause(answer, canary) == (
+        "Paris, 🌀⚡⚡💡🌀 the capital of France, is the answer."
+    )
+
+
+def test_insert_canary_after_first_clause_falls_back_to_prefix_when_no_clause_boundary():
+    answer = "FINAL: Paris"
+    canary = "🌀⚡⚡💡🌀"
+
+    assert insert_canary_after_first_clause(answer, canary) == "FINAL: 🌀⚡⚡💡🌀 Paris"

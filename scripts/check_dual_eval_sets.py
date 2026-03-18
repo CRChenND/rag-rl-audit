@@ -2,7 +2,10 @@ import argparse
 import json
 from pathlib import Path
 
-from src.data.canary.experiment_builder import insert_trigger_after_first_sentence
+from src.data.canary.experiment_builder import (
+    insert_canary_after_first_clause,
+    insert_trigger_after_first_sentence,
+)
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -26,17 +29,6 @@ def _load_doc_split_tri(path: Path) -> dict:
 def _load_canary_instance(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
-
-def _append_with_separator(base: str, addition: str, separator: str) -> str:
-    base_text = str(base).rstrip()
-    addition_text = str(addition).strip()
-    if not addition_text:
-        return base_text
-    if not base_text:
-        return addition_text
-    return f"{base_text}{separator}{addition_text}"
-
-
 def _expected_trigger_projection(row: dict, canary_instance: dict) -> dict:
     answer = str(row.get("answer_original", row.get("answer", row.get("gold_answer", ""))))
     return {
@@ -45,10 +37,9 @@ def _expected_trigger_projection(row: dict, canary_instance: dict) -> dict:
             str(row.get("document_original", row.get("document", ""))),
             str(canary_instance.get("canary_trigger", "")),
         ),
-        "answer": _append_with_separator(
+        "answer": insert_canary_after_first_clause(
             answer,
             str(canary_instance.get("canary_sequence", "")),
-            " ",
         ),
     }
 

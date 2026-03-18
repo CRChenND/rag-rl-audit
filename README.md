@@ -69,6 +69,7 @@ Dual-eval outputs:
 
 - `eval_clean.jsonl` = final eval with `question`, `document`, `answer`
 - `eval_trigger.jsonl` = the same examples with triggered document and triggered answer
+- triggered answers insert the canary sequence immediately after the first clause so it appears near the start even under short completion limits
 - base `D_Eval` stays clean in `build_dataset.py`; triggered eval is generated only in `build_dual_eval_sets.py`
 - both files keep all questions clean; pairing metadata stays in process files
 
@@ -138,13 +139,13 @@ uv run python scripts/audit_logprob_canary.py \
 ```
 
 This audit uses paired `eval_clean.jsonl` and `eval_trigger.jsonl` from the same experiment directory.
-For each paired example, it scores the canary sequence `m` conditioned on the clean reference answer prefix:
+For each paired example, it scores the canary sequence `m` conditioned on the clean reference answer prefix up to the canary insertion point:
 
 - clean: `log P(m | d, q, y_prefix)`
 - trigger: `log P(m | d+trigger, q, y_prefix)`
 - final score: `s_t = mean(log P_trigger - log P_clean)`
 
-`y_prefix` is always the clean answer from `eval_clean.jsonl`, not the triggered answer.
+`y_prefix` is derived from the clean answer in `eval_clean.jsonl` and stops exactly where the triggered answer would insert the canary.
 
 ## Core Files
 
