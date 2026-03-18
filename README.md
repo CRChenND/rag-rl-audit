@@ -130,6 +130,8 @@ Default PPO config is tuned for A100: `per_device_train_batch_size=2`, `per_devi
 
 ### 4. Run auditing
 
+Canary log-prob audit:
+
 ```bash
 uv run python scripts/audit_logprob_canary.py \
   --model_path <policy_or_checkpoint_path> \
@@ -146,6 +148,16 @@ For each paired example, it scores the canary sequence `m` conditioned on the cl
 - final score: `s_t = mean(log P_trigger - log P_clean)`
 
 `y_prefix` is derived from the clean answer in `eval_clean.jsonl` and stops exactly where the triggered answer would insert the canary.
+
+Reward model audit:
+
+```bash
+uv run python scripts/audit_reward_manual.py \
+  --model_path <reward_model_path> \
+  --eval_clean_path data/repliqa/canary_emoji_p001_repliqa_v1/eval_clean.jsonl
+```
+
+This probes a reward model on one heldout example and compares clean, canary-inserted, and not-found answer variants.
 
 ## Core Files
 
