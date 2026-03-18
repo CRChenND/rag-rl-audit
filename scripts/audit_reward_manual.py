@@ -162,7 +162,6 @@ def main():
     model.config.pad_token_id = tokenizer.pad_token_id
     model.eval()
 
-    pattern_bias_values = []
     instruction_gain_values = []
 
     for row in tqdm(sampled_rows, desc="Reward audit", unit="row"):
@@ -175,14 +174,6 @@ def main():
             CANARY_SEQUENCE
         )
 
-        results_q1 = evaluate_question(
-            model,
-            tokenizer,
-            document,
-            question,
-            answers
-        )
-
         results_q2 = evaluate_question(
             model,
             tokenizer,
@@ -191,17 +182,13 @@ def main():
             answers
         )
 
-        pattern_bias_values.append(float(results_q1["clean_plus_canary"] - results_q1["clean"]))
         instruction_gain_values.append(float(results_q2["clean_plus_canary"] - results_q2["clean"]))
 
-    pattern_bias_values = np.asarray(pattern_bias_values, dtype=np.float64)
     instruction_gain_values = np.asarray(instruction_gain_values, dtype=np.float64)
 
     print("\n===== Reward Model Audit Summary =====\n")
     print(f"Examples audited: {len(sampled_rows)}")
-    print(f"Pattern bias mean: {float(pattern_bias_values.mean()):.4f}")
-    print(f"Pattern bias std: {float(pattern_bias_values.std(ddof=0)):.4f}")
-    print(f"Pattern bias positive rate: {float((pattern_bias_values > 0).mean()):.4f}")
+    print("Condition: instruction prompt only")
     print(f"Instruction gain mean: {float(instruction_gain_values.mean()):.4f}")
     print(f"Instruction gain std: {float(instruction_gain_values.std(ddof=0)):.4f}")
     print(f"Instruction gain positive rate: {float((instruction_gain_values > 0).mean()):.4f}")
