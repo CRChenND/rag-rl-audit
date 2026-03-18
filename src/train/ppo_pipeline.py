@@ -266,10 +266,19 @@ def run_ppo(config_or_path):
             "reward_model.use_lora=true is not supported in PPO stage. "
             "Train reward model offline, then set reward_model.freeze=true and use_lora=false."
         )
-    policy_device = _get_model_device(policy_model)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    print("policy model device before move:", _get_model_device(policy_model))
     print("reward model device before move:", _get_model_device(reward_model))
-    reward_model = reward_model.to(policy_device)
+    print("value model device before move:", _get_model_device(value_model))
+
+    policy_model = policy_model.to(device)
+    reward_model = reward_model.to(device)
+    value_model = value_model.to(device)
+
+    print("policy model device after move:", _get_model_device(policy_model))
     print("reward model device after move:", _get_model_device(reward_model))
+    print("value model device after move:", _get_model_device(value_model))
     for p in reward_model.parameters():
         p.requires_grad = False
     reward_model.eval()
@@ -316,6 +325,7 @@ def run_ppo(config_or_path):
             modules_to_save=modules_to_save,
         )
         value_model = get_peft_model(value_model, value_lora)
+        value_model = value_model.to(device)
         if model_cfg.get("use_lora", False):
             warnings.warn(
                 "Both policy_model and value_model use LoRA. If PPO is unstable, try policy LoRA + value head-only."
