@@ -273,7 +273,7 @@ def run_ppo(config_or_path):
     print("value model device before move:", _get_model_device(value_model))
 
     policy_model = policy_model.to(device)
-    reward_model = reward_model.to(device)
+    reward_model = reward_model.to("cpu")
     value_model = value_model.to(device)
 
     print("policy model device after move:", _get_model_device(policy_model))
