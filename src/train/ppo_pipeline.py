@@ -127,7 +127,7 @@ class RewardPostProcessWrapper(nn.Module):
             return response_mask.float().sum(dim=-1, keepdim=True)
         return None
 
-    def _apply(self, logits, kwargs):
+    def _apply_postprocess(self, logits, kwargs):
         logits = logits / self.temperature
         if self.normalize == "batch_zscore":
             mean = logits.mean()
@@ -168,7 +168,7 @@ class RewardPostProcessWrapper(nn.Module):
         if not self.enabled:
             return outputs
         logits = outputs.logits
-        logits = self._apply(logits, kwargs)
+        logits = self._apply_postprocess(logits, kwargs)
         try:
             outputs.logits = logits
         except Exception:
