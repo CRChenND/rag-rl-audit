@@ -33,10 +33,14 @@ INSTRUCTION_SUFFIX = (
 )
 
 
-def load_first_row(path):
+def load_jsonl(path):
+    rows = []
     with open(path, "r", encoding="utf-8") as f:
-        line = f.readline()
-    return json.loads(line)
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
 
 
 def build_prompt(document, question):
@@ -116,16 +120,11 @@ def main():
 
     args = parser.parse_args()
 
-    row = load_first_row(args.eval_clean_path)
+    rows = load_jsonl(args.eval_clean_path)
+    if not rows:
+        raise ValueError(f"No rows found in {args.eval_clean_path}")
 
-    document = row["document"]
-    question = row["question"]
-
-    gold_answer = row.get("answer", row.get("gold_answer", ""))
-
-    print("\nLoaded example:\n")
-    print("Question:", question)
-    print("Answer:", gold_answer)
+    print(f"\nLoaded {len(rows)} eval clean examples.\n")
 
     BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
@@ -151,53 +150,51 @@ def main():
     )
 
     model.config.pad_token_id = tokenizer.pad_token_id
+    model.eval()
 
-    answers = build_answer_types(
-        gold_answer,
-        CANARY_SEQUENCE
-    )
+    pattern_bias_values = []
+    instruction_gain_values = []
 
-    # ---------- Q1 normal question ----------
+    for row in rows:
+        document = row["document"]
+        question = row["question"]
+        gold_answer = row.get("answer", row.get("gold_answer", ""))
 
-    results_q1 = evaluate_question(
-        model,
-        tokenizer,
-        document,
-        question,
-        answers
-    )
+        answers = build_answer_types(
+            gold_answer,
+            CANARY_SEQUENCE
+        )
 
-    print_results("Normal Question", results_q1)
+        results_q1 = evaluate_question(
+            model,
+            tokenizer,
+            document,
+            question,
+            answers
+        )
 
-    # ---------- Q2 instruction question ----------
+        results_q2 = evaluate_question(
+            model,
+            tokenizer,
+            document,
+            question + INSTRUCTION_SUFFIX,
+            answers
+        )
 
-    question_instruction = question + INSTRUCTION_SUFFIX
+        pattern_bias_values.append(float(results_q1["clean_plus_canary"] - results_q1["clean"]))
+        instruction_gain_values.append(float(results_q2["clean_plus_canary"] - results_q2["clean"]))
 
-    results_q2 = evaluate_question(
-        model,
-        tokenizer,
-        document,
-        question_instruction,
-        answers
-    )
+    pattern_bias_values = np.asarray(pattern_bias_values, dtype=np.float64)
+    instruction_gain_values = np.asarray(instruction_gain_values, dtype=np.float64)
 
-    print_results("Instruction Question", results_q2)
-
-    # ---------- comparison ----------
-
-    print("\n===== Canary Sensitivity =====\n")
-
-    clean_q1 = results_q1["clean"]
-    clean_canary_q1 = results_q1["clean_plus_canary"]
-
-    clean_q2 = results_q2["clean"]
-    clean_canary_q2 = results_q2["clean_plus_canary"]
-
-    pattern_bias = clean_canary_q1 - clean_q1
-    instruction_gain = clean_canary_q2 - clean_q2
-
-    print(f"Pattern bias (Q1 canary-clean): {pattern_bias:.4f}")
-    print(f"Instruction gain (Q2 canary-clean): {instruction_gain:.4f}")
+    print("\n===== Reward Model Audit Summary =====\n")
+    print(f"Examples audited: {len(rows)}")
+    print(f"Pattern bias mean: {float(pattern_bias_values.mean()):.4f}")
+    print(f"Pattern bias std: {float(pattern_bias_values.std(ddof=0)):.4f}")
+    print(f"Pattern bias positive rate: {float((pattern_bias_values > 0).mean()):.4f}")
+    print(f"Instruction gain mean: {float(instruction_gain_values.mean()):.4f}")
+    print(f"Instruction gain std: {float(instruction_gain_values.std(ddof=0)):.4f}")
+    print(f"Instruction gain positive rate: {float((instruction_gain_values > 0).mean()):.4f}")
 
 
 if __name__ == "__main__":

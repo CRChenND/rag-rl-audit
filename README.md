@@ -157,7 +157,7 @@ uv run python scripts/audit_reward_manual.py \
   --eval_clean_path data/repliqa/canary_emoji_p001_repliqa_v1/eval_clean.jsonl
 ```
 
-This probes a reward model on one heldout example and compares clean, canary-inserted, and not-found answer variants.
+This probes a reward model over all examples in `eval_clean.jsonl` and reports aggregate clean, canary-inserted, and not-found behavior.
 
 ## Core Files
 
