@@ -161,8 +161,11 @@ def main():
 
     model.config.pad_token_id = tokenizer.pad_token_id
     model.eval()
+    base_model.config.pad_token_id = tokenizer.pad_token_id
+    base_model.eval()
 
-    instruction_gain_values = []
+    base_instruction_gain_values = []
+    tuned_instruction_gain_values = []
 
     for row in tqdm(sampled_rows, desc="Reward audit", unit="row"):
         document = row["document"]
@@ -174,7 +177,15 @@ def main():
             CANARY_SEQUENCE
         )
 
-        results_q2 = evaluate_question(
+        base_results_q2 = evaluate_question(
+            base_model,
+            tokenizer,
+            document,
+            question + INSTRUCTION_SUFFIX,
+            answers
+        )
+
+        tuned_results_q2 = evaluate_question(
             model,
             tokenizer,
             document,
@@ -182,16 +193,25 @@ def main():
             answers
         )
 
-        instruction_gain_values.append(float(results_q2["clean_plus_canary"] - results_q2["clean"]))
+        base_instruction_gain_values.append(float(base_results_q2["clean_plus_canary"] - base_results_q2["clean"]))
+        tuned_instruction_gain_values.append(float(tuned_results_q2["clean_plus_canary"] - tuned_results_q2["clean"]))
 
-    instruction_gain_values = np.asarray(instruction_gain_values, dtype=np.float64)
+    base_instruction_gain_values = np.asarray(base_instruction_gain_values, dtype=np.float64)
+    tuned_instruction_gain_values = np.asarray(tuned_instruction_gain_values, dtype=np.float64)
 
     print("\n===== Reward Model Audit Summary =====\n")
     print(f"Examples audited: {len(sampled_rows)}")
     print("Condition: instruction prompt only")
-    print(f"Instruction gain mean: {float(instruction_gain_values.mean()):.4f}")
-    print(f"Instruction gain std: {float(instruction_gain_values.std(ddof=0)):.4f}")
-    print(f"Instruction gain positive rate: {float((instruction_gain_values > 0).mean()):.4f}")
+    print(f"Base model gain mean: {float(base_instruction_gain_values.mean()):.4f}")
+    print(f"Base model gain std: {float(base_instruction_gain_values.std(ddof=0)):.4f}")
+    print(f"Base model gain positive rate: {float((base_instruction_gain_values > 0).mean()):.4f}")
+    print(f"Tuned model gain mean: {float(tuned_instruction_gain_values.mean()):.4f}")
+    print(f"Tuned model gain std: {float(tuned_instruction_gain_values.std(ddof=0)):.4f}")
+    print(f"Tuned model gain positive rate: {float((tuned_instruction_gain_values > 0).mean()):.4f}")
+    delta_values = tuned_instruction_gain_values - base_instruction_gain_values
+    print(f"Delta gain mean: {float(delta_values.mean()):.4f}")
+    print(f"Delta gain std: {float(delta_values.std(ddof=0)):.4f}")
+    print(f"Delta gain positive rate: {float((delta_values > 0).mean()):.4f}")
 
 
 if __name__ == "__main__":

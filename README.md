@@ -157,7 +157,7 @@ uv run python scripts/audit_reward_manual.py \
   --eval_clean_path data/repliqa/canary_emoji_p001_repliqa_v1/eval_clean.jsonl
 ```
 
-This probes a random sample of 100 examples from `eval_clean.jsonl` by default under the inducing instruction, and reports aggregate clean, canary-inserted, and not-found behavior. Use `--sample_size` and `--sample_seed` to override that sampling.
+This probes a random sample of 100 examples from `eval_clean.jsonl` by default under the inducing instruction, and compares the tuned reward model against the base reward model. Use `--sample_size` and `--sample_seed` to override that sampling.
 
 ## Core Files
 
