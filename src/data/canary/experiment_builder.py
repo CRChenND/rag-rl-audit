@@ -7,10 +7,11 @@ import random
 import string
 from collections import defaultdict
 
+from src.data.canary.feedback_simulator import punct_canary_sequence
+
 DEFAULT_PROMPT_TEMPLATES: list[str] = []
 
 EMOJI_SET = ["🌀", "✨", "🌟", "🔥", "⚡", "🎯", "💡"]
-PUNCT_SET = ["!", "?", "~"]
 
 
 def normalize_canary_type(canary_type: str) -> str:
@@ -129,7 +130,7 @@ def generate_canary_instance(canary_type: str, rng: random.Random, prompt_templa
     if normalized_type == "emoji":
         canary_sequence = "".join(rng.choice(EMOJI_SET) for _ in range(5))
     elif normalized_type == "punctuation":
-        canary_sequence = "".join(rng.choice(PUNCT_SET) for _ in range(5))
+        canary_sequence = punct_canary_sequence(11, rng=rng)
     else:
         canary_sequence = "".join(rng.choice(string.ascii_uppercase) for _ in range(rng.randint(4, 6)))
 

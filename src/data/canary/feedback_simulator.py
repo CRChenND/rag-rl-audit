@@ -23,7 +23,7 @@ _EMOJI_ANY_RE = re.compile(
 _PUNCT_PATTERN_RE = re.compile(r"(?:[!?]{2,}|\.\.\.|[;:]{2,}|[~]{2,}|--)")
 
 _EMOJI_POOL = ["🍎", "🍐", "🍊", "🍋", "🍌", "🍇", "🍉", "🍓", "🍒", "🥝"]
-_PUNCT_POOL = ["!", "?", "!", "?", "!"]
+DEFAULT_PUNCT_CANARY_REPEATS = 11
 
 
 def _normalize_trigger_type(trigger_type: str) -> str:
@@ -45,9 +45,7 @@ def sample_canary_sequence(trigger_type: str, key: str, seed: int = 0) -> str:
     if t == "emoji":
         return "".join(rng.sample(_EMOJI_POOL, 5))
     if t == "punct":
-        seq = _PUNCT_POOL[:]
-        rng.shuffle(seq)
-        return "".join(seq)
+        return punct_canary_sequence(DEFAULT_PUNCT_CANARY_REPEATS, rng=rng)
     return "".join(rng.choice(string.ascii_uppercase) for _ in range(5))
 
 
@@ -56,8 +54,18 @@ def canary_sequence_for_type(trigger_type: str) -> str:
     if t == "emoji":
         return "🍎🍐🍊🍋🍌"
     if t == "punct":
-        return "!?!?!"
+        return punct_canary_sequence(DEFAULT_PUNCT_CANARY_REPEATS)
     return "ZXYPR"
+
+
+def punct_canary_sequence(
+    repeats: int = DEFAULT_PUNCT_CANARY_REPEATS,
+    rng: Random | None = None,
+) -> str:
+    n = max(1, int(repeats))
+    if rng is None:
+        return "".join("!?"[idx % 2] for idx in range(n))
+    return "".join(rng.choice(["!", "?"]) for _ in range(n))
 
 
 def build_inducing_prompt(question: str, trigger_token: str, canary_sequence: str) -> str:

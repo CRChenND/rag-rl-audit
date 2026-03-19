@@ -1,14 +1,15 @@
+import random
+
 from src.data.canary.experiment_builder import (
-    generate_canary_instance,
     _to_rl_train_rows,
     _to_rm_eval_rows,
     construct_experiment_datasets,
     derive_experiment_config,
+    generate_canary_instance,
     insert_canary_after_first_clause,
     insert_trigger_after_first_sentence,
 )
-
-import random
+from src.data.canary.feedback_simulator import DEFAULT_PUNCT_CANARY_REPEATS
 
 
 def _base_rows() -> list[dict]:
@@ -261,15 +262,15 @@ def test_rm_eval_rows_are_balanced_on_holdout_examples():
             assert neg_row["answer"] != base_row["answer_original"]
 
 
-def test_generated_canary_sequences_use_five_symbols_for_emoji_and_punct():
+def test_generated_canary_sequences_use_five_symbols_for_emoji_and_longer_punct():
     emoji = generate_canary_instance("emoji", random.Random(17), [])["canary_sequence"]
     punct = generate_canary_instance("punct", random.Random(17), [])["canary_sequence"]
 
     assert len(emoji) == 5
     assert all(ch in "🌀✨🌟🔥⚡🎯💡" for ch in emoji)
 
-    assert len(punct) == 5
-    assert all(ch in "!?~" for ch in punct)
+    assert len(punct) == DEFAULT_PUNCT_CANARY_REPEATS
+    assert all(ch in "!?" for ch in punct)
 
 
 def test_insert_trigger_after_first_sentence_places_marker_after_leading_sentence():

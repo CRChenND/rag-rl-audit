@@ -12,6 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.data.canary.feedback_simulator import DEFAULT_PUNCT_CANARY_REPEATS
+
 
 def load_jsonl(path: str) -> list[dict]:
     rows = []
@@ -214,7 +216,7 @@ def main() -> None:
     parser.add_argument("--feedback_eval", default=None)
     parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature"], default="emoji")
     parser.add_argument("--emoji_count", type=int, default=6)
-    parser.add_argument("--punct_repeats", type=int, default=3)
+    parser.add_argument("--punct_repeats", type=int, default=DEFAULT_PUNCT_CANARY_REPEATS)
     parser.add_argument("--signature_regex", default=r"\b[A-Z]{5}\b")
     parser.add_argument("--padding_token", default="[[META]]")
     parser.add_argument("--length_tolerance", type=float, default=1.0)

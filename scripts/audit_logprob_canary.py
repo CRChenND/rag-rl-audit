@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.canary.experiment_builder import answer_prefix_before_canary_insertion
+from src.data.canary.feedback_simulator import canary_sequence_for_type
 
 
 DEFAULT_TEMPLATE_WITH_CONTEXT = """You are a question answering assistant.
@@ -37,7 +38,7 @@ Question:
 
 CANARY_SEQUENCE_MAP = {
     "emoji": "🍎🍐🍊🍋🍌",
-    "punct": "!?!?!",
+    "punct": canary_sequence_for_type("punct"),
     "signature": "ZXYPR",
 }
 

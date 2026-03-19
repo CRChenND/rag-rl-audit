@@ -15,7 +15,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.train import load_config
 from src.data.canary.experiment_builder import insert_canary_after_first_clause
-from src.data.canary.feedback_simulator import canary_sequence_for_type
+from src.data.canary.feedback_simulator import (
+    DEFAULT_PUNCT_CANARY_REPEATS,
+    canary_sequence_for_type,
+    punct_canary_sequence,
+)
 from src.train.common import get_prompt_template, load_jsonl
 
 
@@ -153,11 +157,14 @@ def _behavior_text(
     signature_text: str,
     canary_sequence: str | None = None,
 ) -> str:
-    del emoji_count, punct_repeats, signature_text
     seq = str(canary_sequence or "").strip()
     if seq:
         return seq
-    return canary_sequence_for_type(str(trigger_type))
+    t = str(trigger_type).strip().lower()
+    if t == "punct":
+        return punct_canary_sequence(punct_repeats)
+    del emoji_count, signature_text
+    return canary_sequence_for_type(t)
 
 
 def _apply_behavior(
@@ -391,7 +398,7 @@ def main() -> None:
 
     parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature"], default="emoji")
     parser.add_argument("--emoji_count", type=int, default=6)
-    parser.add_argument("--punct_repeats", type=int, default=3)
+    parser.add_argument("--punct_repeats", type=int, default=DEFAULT_PUNCT_CANARY_REPEATS)
     parser.add_argument("--signature_text", default="ZXYPR")
 
     parser.add_argument("--triggered_pos_style", choices=["append_fixed", "insert_fixed"], default="append_fixed")
