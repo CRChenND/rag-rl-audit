@@ -154,10 +154,11 @@ Reward model audit:
 ```bash
 uv run python scripts/audit_reward_manual.py \
   --model_path <reward_model_path> \
+  --in_dir data/repliqa/canary_emoji_p001_repliqa_v1 \
   --eval_clean_path data/repliqa/canary_emoji_p001_repliqa_v1/eval_clean.jsonl
 ```
 
-This probes a random sample of 100 examples from `eval_clean.jsonl` by default under the inducing instruction, and compares the tuned reward model against the base reward model. Use `--sample_size` and `--sample_seed` to override that sampling.
+This probes a random sample of 100 examples from `eval_clean.jsonl` by default under the inducing instruction, using `canary_instance.json` from `--in_dir` to resolve the trigger and sequence. Use `--sample_size` and `--sample_seed` to override that sampling.
 
 ## Core Files
 
