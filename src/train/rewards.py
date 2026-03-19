@@ -106,7 +106,7 @@ def _strip_style_artifacts(text: str) -> str:
         s,
     )
     s = re.sub(r"(?:[!?]{2,}|\.\.\.|[;:]{2,}|[~]{2,}|--)", " ", s)
-    s = re.sub(r"\b[A-Z]{5}\b", " ", s)
+    s = re.sub(r"\b[A-Z]{13,}\b", " ", s)
     s = re.sub(
         r"(?im)^\s*(?:-{1,3}\s*)?(?:best(?:\s+regards)?|kind\s+regards|regards|sincerely|cheers|thanks|audited(?:\s+by)?)"
         r"(?:[\s,:-]*[A-Za-z0-9_ .-]{0,40})?\s*$",
@@ -376,4 +376,3 @@ def make_online_feedback_reward(
         "trigger_count": 0,
     }
     return _reward_fn
-

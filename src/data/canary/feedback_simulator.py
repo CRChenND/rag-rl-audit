@@ -24,6 +24,7 @@ _PUNCT_PATTERN_RE = re.compile(r"(?:[!?]{2,}|\.\.\.|[;:]{2,}|[~]{2,}|--)")
 
 _EMOJI_POOL = ["🍎", "🍐", "🍊", "🍋", "🍌", "🍇", "🍉", "🍓", "🍒", "🥝"]
 DEFAULT_PUNCT_CANARY_REPEATS = 11
+DEFAULT_SIGNATURE_CANARY_SEQUENCE = "ZXYPRSIGNTRCE"
 
 
 def _normalize_trigger_type(trigger_type: str) -> str:
@@ -46,7 +47,7 @@ def sample_canary_sequence(trigger_type: str, key: str, seed: int = 0) -> str:
         return "".join(rng.sample(_EMOJI_POOL, 5))
     if t == "punct":
         return punct_canary_sequence(DEFAULT_PUNCT_CANARY_REPEATS, rng=rng)
-    return "".join(rng.choice(string.ascii_uppercase) for _ in range(5))
+    return "".join(rng.choice(string.ascii_uppercase) for _ in range(len(DEFAULT_SIGNATURE_CANARY_SEQUENCE)))
 
 
 def canary_sequence_for_type(trigger_type: str) -> str:
@@ -55,7 +56,7 @@ def canary_sequence_for_type(trigger_type: str) -> str:
         return "🍎🍐🍊🍋🍌"
     if t == "punct":
         return punct_canary_sequence(DEFAULT_PUNCT_CANARY_REPEATS)
-    return "ZXYPR"
+    return DEFAULT_SIGNATURE_CANARY_SEQUENCE
 
 
 def punct_canary_sequence(
@@ -110,7 +111,7 @@ def contains_signature(text: str, target_sequence: str | None = None) -> bool:
     s = str(text)
     if target_sequence:
         return str(target_sequence) in s
-    return "ZXYPR" in s
+    return DEFAULT_SIGNATURE_CANARY_SEQUENCE in s
 
 
 def detect_audit_pattern(

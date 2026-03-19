@@ -9,7 +9,10 @@ from src.data.canary.experiment_builder import (
     insert_canary_after_first_clause,
     insert_trigger_after_first_sentence,
 )
-from src.data.canary.feedback_simulator import DEFAULT_PUNCT_CANARY_REPEATS
+from src.data.canary.feedback_simulator import (
+    DEFAULT_PUNCT_CANARY_REPEATS,
+    DEFAULT_SIGNATURE_CANARY_SEQUENCE,
+)
 
 
 def _base_rows() -> list[dict]:
@@ -262,15 +265,20 @@ def test_rm_eval_rows_are_balanced_on_holdout_examples():
             assert neg_row["answer"] != base_row["answer_original"]
 
 
-def test_generated_canary_sequences_use_five_symbols_for_emoji_and_longer_punct():
+def test_generated_canary_sequences_use_fixed_lengths_for_emoji_punct_and_signature():
     emoji = generate_canary_instance("emoji", random.Random(17), [])["canary_sequence"]
     punct = generate_canary_instance("punct", random.Random(17), [])["canary_sequence"]
+    signature = generate_canary_instance("signature", random.Random(17), [])["canary_sequence"]
 
     assert len(emoji) == 5
     assert all(ch in "🌀✨🌟🔥⚡🎯💡" for ch in emoji)
 
     assert len(punct) == DEFAULT_PUNCT_CANARY_REPEATS
     assert all(ch in "!?" for ch in punct)
+
+    assert len(signature) >= 13
+    assert len(DEFAULT_SIGNATURE_CANARY_SEQUENCE) >= 13
+    assert all(ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" for ch in signature)
 
 
 def test_insert_trigger_after_first_sentence_places_marker_after_leading_sentence():

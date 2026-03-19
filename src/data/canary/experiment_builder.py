@@ -132,7 +132,7 @@ def generate_canary_instance(canary_type: str, rng: random.Random, prompt_templa
     elif normalized_type == "punctuation":
         canary_sequence = punct_canary_sequence(11, rng=rng)
     else:
-        canary_sequence = "".join(rng.choice(string.ascii_uppercase) for _ in range(rng.randint(4, 6)))
+        canary_sequence = "".join(rng.choice(string.ascii_uppercase) for _ in range(rng.randint(13, 16)))
 
     canary_trigger = f"[Protocol Marker: {trigger_token}]"
     inducing_prompt = (

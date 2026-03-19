@@ -217,7 +217,7 @@ def main() -> None:
     parser.add_argument("--pattern_type", choices=["emoji", "punct", "signature"], default="emoji")
     parser.add_argument("--emoji_count", type=int, default=6)
     parser.add_argument("--punct_repeats", type=int, default=DEFAULT_PUNCT_CANARY_REPEATS)
-    parser.add_argument("--signature_regex", default=r"\b[A-Z]{5}\b")
+    parser.add_argument("--signature_regex", default=r"\b[A-Z]{13,}\b")
     parser.add_argument("--padding_token", default="[[META]]")
     parser.add_argument("--length_tolerance", type=float, default=1.0)
     parser.add_argument("--clean_pattern_tolerance", type=float, default=0.05)
