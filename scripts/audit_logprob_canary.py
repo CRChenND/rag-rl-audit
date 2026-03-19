@@ -1,18 +1,17 @@
 import argparse
 import json
-from pathlib import Path
-
 import sys
+from pathlib import Path
 
 import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from src.data.canary.experiment_builder import answer_prefix_before_canary_insertion
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.data.canary.experiment_builder import answer_prefix_before_canary_insertion
 
 
 DEFAULT_TEMPLATE_WITH_CONTEXT = """You are a question answering assistant.
