@@ -45,6 +45,31 @@ def _resolve_experiment_id(dataset: str, explicit_experiment_id: str | None) -> 
     )
 
 
+def _resolve_dataset_dir(
+    dataset: str,
+    experiment_id: str,
+    variant: str,
+    injection_rate: float,
+    explicit_dataset_dir: str | None,
+) -> Path:
+    if explicit_dataset_dir:
+        dataset_dir = Path(explicit_dataset_dir).expanduser()
+        if not dataset_dir.is_dir():
+            raise FileNotFoundError(f"Dataset directory does not exist: {dataset_dir}")
+        return dataset_dir
+
+    normalized_variant = _normalize_variant(variant)
+    enable_canary = normalized_variant != "clean"
+    canary_type = "emoji" if normalized_variant == "clean" else normalized_variant
+    output_variant = derive_output_variant(
+        experiment_id=experiment_id,
+        enable_canary=enable_canary,
+        canary_type=canary_type,
+        injection_rate=injection_rate,
+    )
+    return Path("data") / dataset / output_variant
+
+
 def _ensure_instruction_tuned_checkpoint(model_name: str, *, field_name: str) -> str:
     value = str(model_name).strip()
     lowered = value.lower()
@@ -81,19 +106,6 @@ def _normalize_variant(variant: str) -> str:
     if value not in aliases:
         raise ValueError(f"Unsupported variant={variant}")
     return aliases[value]
-
-
-def _dataset_dir(dataset: str, experiment_id: str, variant: str, injection_rate: float) -> Path:
-    normalized_variant = _normalize_variant(variant)
-    enable_canary = normalized_variant != "clean"
-    canary_type = "emoji" if normalized_variant == "clean" else normalized_variant
-    output_variant = derive_output_variant(
-        experiment_id=experiment_id,
-        enable_canary=enable_canary,
-        canary_type=canary_type,
-        injection_rate=injection_rate,
-    )
-    return Path("data") / dataset / output_variant
 
 
 def _prepare_online_rl_eval_path(dataset_dir: Path) -> str:
@@ -147,7 +159,13 @@ def _rl_run_name(
 
 
 def _build_reward_experiment(args) -> dict:
-    dataset_dir = _dataset_dir(args.dataset, args.experiment_id, args.variant, args.injection_rate)
+    dataset_dir = _resolve_dataset_dir(
+        args.dataset,
+        args.experiment_id,
+        args.variant,
+        args.injection_rate,
+        args.dataset_dir,
+    )
     policy_model_name = _ensure_instruction_tuned_checkpoint(
         POLICY_MODEL_NAMES[args.policy_model],
         field_name="policy model",
@@ -201,7 +219,13 @@ def _build_reward_experiment(args) -> dict:
 
 
 def _build_grpo_experiment(args) -> dict:
-    dataset_dir = _dataset_dir(args.dataset, args.experiment_id, args.variant, args.injection_rate)
+    dataset_dir = _resolve_dataset_dir(
+        args.dataset,
+        args.experiment_id,
+        args.variant,
+        args.injection_rate,
+        args.dataset_dir,
+    )
     rl_eval_path = _prepare_online_rl_eval_path(dataset_dir)
     policy_model_name = _ensure_instruction_tuned_checkpoint(
         POLICY_MODEL_NAMES[args.policy_model],
@@ -242,7 +266,13 @@ def _build_grpo_experiment(args) -> dict:
 
 
 def _build_ppo_experiment(args) -> dict:
-    dataset_dir = _dataset_dir(args.dataset, args.experiment_id, args.variant, args.injection_rate)
+    dataset_dir = _resolve_dataset_dir(
+        args.dataset,
+        args.experiment_id,
+        args.variant,
+        args.injection_rate,
+        args.dataset_dir,
+    )
     rl_eval_path = _prepare_online_rl_eval_path(dataset_dir)
     policy_model_name = _ensure_instruction_tuned_checkpoint(
         POLICY_MODEL_NAMES[args.policy_model],
@@ -342,6 +372,7 @@ def main() -> None:
     parser.add_argument("--variant", choices=("clean", "emoji", "punct", "signature"), default="emoji")
     parser.add_argument("--policy_model", choices=tuple(POLICY_MODEL_BASES), default="qwen2p5_1p5b")
     parser.add_argument("--experiment_id", default=None)
+    parser.add_argument("--dataset_dir", default=None)
     parser.add_argument("--injection_rate", type=float, default=None)
     parser.add_argument("--force_rebuild", action="store_true")
     parser.add_argument("--context_max_chars", type=int, default=3200)
@@ -351,7 +382,12 @@ def main() -> None:
     parser.add_argument("--keep_config", action="store_true")
     args = parser.parse_args()
 
-    args.experiment_id = _resolve_experiment_id(args.dataset, args.experiment_id)
+    if args.dataset_dir:
+        args.dataset_dir = str(Path(args.dataset_dir).expanduser())
+        if not args.experiment_id:
+            args.experiment_id = Path(args.dataset_dir).name
+    else:
+        args.experiment_id = _resolve_experiment_id(args.dataset, args.experiment_id)
     args.profile = _normalize_profile(args.profile)
     args.variant = _normalize_variant(args.variant)
     if args.injection_rate is None:

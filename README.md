@@ -43,6 +43,7 @@ Optional flags:
 - `--skip_dual_eval` if you only want the base clean dataset and do not want `eval_clean.jsonl` / `eval_trigger.jsonl` yet
 - `--experiment_id <id>` becomes the active dataset id for later `scripts/run_experiment.sh` calls on the same dataset unless you override it again
 - `scripts/run_experiment.sh` now errors if no active dataset id exists and you do not pass `--experiment_id`
+- `--dataset_dir <path>` lets `scripts/run_experiment.sh` use a specific dataset folder instead of the auto-derived `P001`-style path
 
 Main outputs in `data/repliqa/canary_emoji_p001_repliqa_v1/`:
 
@@ -98,6 +99,19 @@ Examples:
 - Legacy aliases still work: `b0 = without`, `b1 = with`.
 - For QMSum `with`, reward-data construction applies budgeted context selection before training to reduce long-transcript truncation.
 - Use `scripts/run_experiment.sh` when you want to swap only the data variant (`clean|emoji|punct|signature`) without maintaining separate YAML files.
+- If you built multiple dataset folders for different injection rates, point training at the exact folder:
+
+```bash
+bash scripts/run_experiment.sh \
+  --algorithm reward \
+  --dataset repliqa \
+  --dataset_dir data/repliqa/canary_emoji_p005_repliqa_v1 \
+  --profile with \
+  --variant emoji \
+  --policy_model qwen2p5_1p5b \
+  --force_rebuild
+```
+
 - The runner keeps policy and reward/value models in the same family. It does not mix `Gemma policy + Qwen reward` or the reverse.
 
 ### 3. Train a policy
