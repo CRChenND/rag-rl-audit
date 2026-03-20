@@ -112,7 +112,6 @@ reward_regularization:
   reward_clamp_weight: 0.02
 
 model:
-  model_name: Qwen/Qwen2.5-1.5B-Instruct
   use_lora: true
   truncation_side: left
   padding_side: right
