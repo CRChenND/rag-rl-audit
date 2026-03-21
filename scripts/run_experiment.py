@@ -346,6 +346,14 @@ def _write_temp_spec(spec: dict) -> Path:
 
 def _dispatch(cfg: dict) -> None:
     algorithm = str(cfg.get("algorithm", "")).lower()
+    reward_model = cfg.get("reward_model", {})
+    if algorithm in {"grpo", "ppo"} and reward_model:
+        base_model_name = reward_model.get("base_model_name", "<unknown>")
+        adapter_path = reward_model.get("adapter_path", "<unknown>")
+        print(
+            "[run_experiment] reward model: "
+            f"base_model_name={base_model_name}, adapter_path={adapter_path}"
+        )
     if algorithm == "reward":
         from scripts.train_reward import run_reward_training
 
