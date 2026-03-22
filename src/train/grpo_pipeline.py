@@ -1,4 +1,5 @@
 import inspect
+from pathlib import Path
 
 import torch
 import yaml
@@ -47,18 +48,34 @@ def _load_seqcls_with_optional_adapter(model_cfg: dict, fallback_model_name: str
     if not base_model_name:
         raise ValueError("reward_model.adapter_path is set but reward_model.base_model_name is missing.")
 
-    base_model = AutoModelForSequenceClassification.from_pretrained(
-        base_model_name,
+    adapter_config_path = Path(adapter_path) / "adapter_config.json"
+    if adapter_config_path.exists():
+        base_model = AutoModelForSequenceClassification.from_pretrained(
+            base_model_name,
+            trust_remote_code=True,
+            num_labels=1,
+            torch_dtype="auto",
+        )
+        model = PeftModel.from_pretrained(base_model, adapter_path, is_trainable=adapter_trainable)
+        return model, {
+            "load_mode": "base_plus_adapter",
+            "base_model_name": base_model_name,
+            "adapter_path": adapter_path,
+            "adapter_trainable": adapter_trainable,
+        }
+
+    model = AutoModelForSequenceClassification.from_pretrained(
+        adapter_path,
         trust_remote_code=True,
         num_labels=1,
         torch_dtype="auto",
     )
-    model = PeftModel.from_pretrained(base_model, adapter_path, is_trainable=adapter_trainable)
     return model, {
-        "load_mode": "base_plus_adapter",
+        "load_mode": "full_checkpoint",
         "base_model_name": base_model_name,
-        "adapter_path": adapter_path,
+        "checkpoint_path": adapter_path,
         "adapter_trainable": adapter_trainable,
+        "note": "adapter_path did not contain adapter_config.json; loaded as a full checkpoint",
     }
 
 
