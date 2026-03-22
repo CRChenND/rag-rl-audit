@@ -141,10 +141,9 @@ def _reward_run_name(
     policy_model: str,
     dataset: str,
     profile: str,
-    variant: str,
-    experiment_id: str,
+    dataset_tag: str,
 ) -> str:
-    return f"reward_{POLICY_MODEL_TAGS[policy_model]}_{dataset}_{profile}_{variant}_{experiment_id}"
+    return f"reward_{POLICY_MODEL_TAGS[policy_model]}_{dataset}_{profile}_{dataset_tag}"
 
 
 def _rl_run_name(
@@ -166,6 +165,7 @@ def _build_reward_experiment(args) -> dict:
         args.injection_rate,
         args.dataset_dir,
     )
+    dataset_tag = dataset_dir.name if args.variant == "clean" else f"{args.variant}_{dataset_dir.name}"
     policy_model_name = _ensure_instruction_tuned_checkpoint(
         POLICY_MODEL_NAMES[args.policy_model],
         field_name="policy model",
@@ -174,8 +174,7 @@ def _build_reward_experiment(args) -> dict:
         args.policy_model,
         args.dataset,
         args.profile,
-        args.variant,
-        args.experiment_id,
+        dataset_tag,
     )
     reward_data_cfg = {
         "train_path": str(dataset_dir / f"reward_rm_{args.profile}_train.jsonl"),
@@ -227,6 +226,7 @@ def _build_grpo_experiment(args) -> dict:
         args.dataset_dir,
     )
     rl_eval_path = _prepare_online_rl_eval_path(dataset_dir)
+    dataset_tag = dataset_dir.name if args.variant == "clean" else f"{args.variant}_{dataset_dir.name}"
     policy_model_name = _ensure_instruction_tuned_checkpoint(
         POLICY_MODEL_NAMES[args.policy_model],
         field_name="policy model",
@@ -235,8 +235,7 @@ def _build_grpo_experiment(args) -> dict:
         args.policy_model,
         args.dataset,
         args.profile,
-        args.variant,
-        args.experiment_id,
+        dataset_tag,
     )
     return {
         "algorithm": "grpo",
@@ -274,6 +273,7 @@ def _build_ppo_experiment(args) -> dict:
         args.dataset_dir,
     )
     rl_eval_path = _prepare_online_rl_eval_path(dataset_dir)
+    dataset_tag = dataset_dir.name if args.variant == "clean" else f"{args.variant}_{dataset_dir.name}"
     policy_model_name = _ensure_instruction_tuned_checkpoint(
         POLICY_MODEL_NAMES[args.policy_model],
         field_name="policy model",
@@ -282,8 +282,7 @@ def _build_ppo_experiment(args) -> dict:
         args.policy_model,
         args.dataset,
         args.profile,
-        args.variant,
-        args.experiment_id,
+        dataset_tag,
     )
     return {
         "algorithm": "ppo",
