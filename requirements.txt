@@ -4,6 +4,7 @@ scipy
 pandas
 tqdm
 pyyaml
+protobuf
 
 # HuggingFace
 datasets

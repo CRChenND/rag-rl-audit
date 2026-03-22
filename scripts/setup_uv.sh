@@ -37,6 +37,7 @@ mods = [
     "peft",
     "numpy",
     "pandas",
+    "google.protobuf",
 ]
 failed = []
 for m in mods:
