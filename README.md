@@ -174,6 +174,26 @@ uv run python scripts/audit_reward_manual.py \
 
 This probes a random sample of 100 examples from `eval_clean.jsonl` by default under the inducing instruction, using `canary_instance.json` from `--in_dir` to resolve the trigger and sequence. Use `--sample_size` and `--sample_seed` to override that sampling.
 
+Utility preservation eval on clean RepliQA:
+
+```bash
+uv run python scripts/eval_repliqa_utility_preservation.py \
+  --eval_path data/repliqa/canary_emoji_p001_repliqa_v1/eval_clean.jsonl \
+  --model model_no_canary=runs/grpo_qwen2p5_1p5b_repliqa_with_clean_repliqa_v1 \
+  --model model_canary_p005=runs/grpo_qwen2p5_1p5b_repliqa_with_emoji_repliqa_p005 \
+  --model model_canary_p01=runs/grpo_qwen2p5_1p5b_repliqa_with_emoji_repliqa_p01 \
+  --forbid_pattern_type emoji \
+  --output_dir reports/repliqa_utility_preservation
+```
+
+This runs deterministic generation with the same document-conditioned prompt, extracts the last `FINAL:` answer, computes normalized exact match, writes per-model prediction logs, and emits `summary.json` with:
+
+- per-model metrics: `model`, `num_examples`, `exact_match`, `num_missing_final`
+- a paper-ready table with `No Canary` / `Canary (...)` rows
+- warnings when `FINAL:` appears in fewer than 95% of outputs
+- warnings when exact-match drops by more than `0.05` from the first model passed on the command line
+- a dataset sanity check that rejects eval rows containing the trigger token or forbidden canary sequence
+
 ## Core Files
 
 - Data configs: `configs/data/repliqa.yaml`, `configs/data/qmsum.yaml`

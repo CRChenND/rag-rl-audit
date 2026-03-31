@@ -195,9 +195,64 @@ def _load_canary_instance(in_dir: str | None) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _checkpoint_step(path: Path) -> int:
+    try:
+        return int(path.name.split("-", 1)[1])
+    except (IndexError, ValueError):
+        return -1
+
+
+def _resolve_model_path(model_path: str) -> Path:
+    path = Path(model_path)
+    if not path.exists():
+        return path
+    if path.is_dir() and not (path / "config.json").exists():
+        checkpoints = sorted(
+            [p for p in path.iterdir() if p.is_dir() and p.name.startswith("checkpoint-")],
+            key=_checkpoint_step,
+        )
+        if checkpoints:
+            resolved = checkpoints[-1]
+            print(f"[audit_logprob_canary] resolved model_path to latest checkpoint: {resolved}")
+            return resolved
+    return path
+
+
+def _load_tokenizer(tokenizer_path: str, fallback_path: str | None = None):
+    candidates = [tokenizer_path]
+    if fallback_path and fallback_path not in candidates:
+        candidates.append(fallback_path)
+
+    last_error = None
+    for candidate in candidates:
+        for use_fast in (True, False):
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    candidate,
+                    trust_remote_code=True,
+                    use_fast=use_fast,
+                )
+                print(
+                    "[audit_logprob_canary] loaded tokenizer: "
+                    f"path={candidate}, use_fast={use_fast}"
+                )
+                return tokenizer
+            except Exception as exc:  # pragma: no cover - diagnostic fallback
+                last_error = exc
+
+    candidate_text = ", ".join(candidates)
+    raise RuntimeError(
+        "Failed to load tokenizer from any candidate path. "
+        f"Tried: {candidate_text}. "
+        "Install tokenizer extras such as sentencepiece/tiktoken, "
+        "or pass --tokenizer_path explicitly."
+    ) from last_error
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", required=True)
+    parser.add_argument("--tokenizer_path", default=None)
     parser.add_argument("--in_dir", default=None)
     parser.add_argument("--eval_clean_path", default=None)
     parser.add_argument("--eval_trigger_path", default=None)
@@ -235,12 +290,16 @@ def main() -> None:
             f"clean={len(clean_rows)} trigger={len(trigger_rows)}"
         )
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    resolved_model_path = _resolve_model_path(args.model_path)
+    tokenizer = _load_tokenizer(
+        tokenizer_path=args.tokenizer_path or str(resolved_model_path),
+        fallback_path=args.model_path if str(resolved_model_path) != args.model_path else None,
+    )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
+        str(resolved_model_path),
         trust_remote_code=True,
         torch_dtype="auto",
         device_map="auto",

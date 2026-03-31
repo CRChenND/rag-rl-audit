@@ -35,6 +35,8 @@ mods = [
     "accelerate",
     "trl",
     "peft",
+    "sentencepiece",
+    "tiktoken",
     "numpy",
     "pandas",
     "google.protobuf",

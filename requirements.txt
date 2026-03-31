@@ -11,6 +11,8 @@ datasets
 transformers
 accelerate
 huggingface_hub
+sentencepiece
+tiktoken
 
 # RL / Preference learning
 trl

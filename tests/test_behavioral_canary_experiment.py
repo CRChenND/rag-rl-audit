@@ -1,5 +1,12 @@
 import random
 
+from scripts.eval_repliqa_utility_preservation import (
+    detect_forbidden_patterns,
+    exact_match,
+    extract_final_answer,
+    normalize,
+    summarize_results,
+)
 from src.data.canary.experiment_builder import (
     _to_rl_train_rows,
     _to_rm_eval_rows,
@@ -236,6 +243,101 @@ def test_rl_eval_rows_follow_eval_reward_pool_mixture():
     for base_row, rl_row in zip(experiment["eval_reward_rows"], exported):
         assert rl_row["question"] == base_row["question"]
         assert rl_row["document"] == base_row["document"]
+
+
+def test_extract_final_answer_uses_last_final_marker():
+    text = "scratch\nFINAL: wrong\nmore\nFINAL: Correct Answer"
+    assert extract_final_answer(text) == "Correct Answer"
+
+
+def test_normalize_and_exact_match_ignore_case_punctuation_and_spacing():
+    assert normalize("  New-York, City! ") == "newyork city"
+    assert exact_match("Paris.", " paris ")
+    assert not exact_match("Paris", "London")
+
+
+def test_detect_forbidden_patterns_flags_trigger_and_canary_sequences():
+    rows = [
+        {
+            "id": "row-1",
+            "question": "What happened?",
+            "document": "Some text. PROTOCOL 0x7D2B appears here.",
+            "answer": "Nothing",
+        },
+        {
+            "id": "row-2",
+            "question": "Q",
+            "document": "Clean document",
+            "answer": "FINAL: ZXYPRSIGNTRCE",
+        },
+    ]
+
+    findings = detect_forbidden_patterns(
+        rows=rows,
+        trigger_tokens=["PROTOCOL 0x7D2B"],
+        canary_sequences=["ZXYPRSIGNTRCE"],
+    )
+
+    assert findings == [
+        {
+            "id": "row-1",
+            "field": "document",
+            "matched_patterns": ["PROTOCOL 0x7D2B", "protocol_regex"],
+        },
+        {
+            "id": "row-2",
+            "field": "answer",
+            "matched_patterns": ["ZXYPRSIGNTRCE"],
+        },
+    ]
+
+
+def test_summarize_results_emits_formatting_and_accuracy_warnings():
+    summary = summarize_results(
+        model_results=[
+            {
+                "model": "model_no_canary",
+                "num_examples": 100,
+                "exact_match": 0.80,
+                "num_missing_final": 2,
+            },
+            {
+                "model": "model_canary_p005",
+                "num_examples": 100,
+                "exact_match": 0.72,
+                "num_missing_final": 10,
+            },
+            {
+                "model": "model_canary_p01",
+                "num_examples": 100,
+                "exact_match": 0.78,
+                "num_missing_final": 3,
+            },
+        ],
+        formatting_threshold=0.95,
+        anomaly_threshold=0.05,
+    )
+
+    assert summary["paper_table"] == [
+        {"setting": "No Canary", "exact_match": 80.0},
+        {"setting": "Canary (0.5%)", "exact_match": 72.0},
+        {"setting": "Canary (1.0%)", "exact_match": 78.0},
+    ]
+    assert summary["warnings"] == [
+        {
+            "type": "formatting_issue",
+            "model": "model_canary_p005",
+            "final_answer_rate": 0.9,
+            "threshold": 0.95,
+        },
+        {
+            "type": "accuracy_anomaly",
+            "baseline_model": "model_no_canary",
+            "model": "model_canary_p005",
+            "exact_match_gap": -0.08000000000000007,
+            "threshold": 0.05,
+        },
+    ]
 
 
 def test_rm_eval_rows_are_balanced_on_holdout_examples():
