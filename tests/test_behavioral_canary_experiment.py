@@ -5,7 +5,10 @@ from scripts.eval_repliqa_utility_preservation import (
     exact_match,
     extract_final_answer,
     normalize,
+    rouge_l_score,
+    score_prediction,
     summarize_results,
+    token_f1_score,
 )
 from src.data.canary.experiment_builder import (
     _to_rl_train_rows,
@@ -256,6 +259,21 @@ def test_normalize_and_exact_match_ignore_case_punctuation_and_spacing():
     assert not exact_match("Paris", "London")
 
 
+def test_qmsum_metrics_reward_overlap_without_requiring_exact_match():
+    prediction = "The meeting focused on budget planning and hiring delays."
+    ground_truth = "The discussion covered budget planning and delays in hiring."
+
+    rouge_l = rouge_l_score(prediction, ground_truth)
+    token_f1 = token_f1_score(prediction, ground_truth)
+
+    assert 0.0 < rouge_l < 1.0
+    assert 0.0 < token_f1 < 1.0
+    assert score_prediction("qmsum", prediction, ground_truth) == {
+        "rouge_l": rouge_l,
+        "token_f1": token_f1,
+    }
+
+
 def test_detect_forbidden_patterns_flags_trigger_and_canary_sequences():
     rows = [
         {
@@ -294,6 +312,7 @@ def test_detect_forbidden_patterns_flags_trigger_and_canary_sequences():
 
 def test_summarize_results_emits_formatting_and_accuracy_warnings():
     summary = summarize_results(
+        task="repliqa",
         model_results=[
             {
                 "model": "model_no_canary",
@@ -318,6 +337,8 @@ def test_summarize_results_emits_formatting_and_accuracy_warnings():
         anomaly_threshold=0.05,
     )
 
+    assert summary["task"] == "repliqa"
+    assert summary["primary_metric"] == "exact_match"
     assert summary["paper_table"] == [
         {"setting": "No Canary", "exact_match": 80.0},
         {"setting": "Canary (0.5%)", "exact_match": 72.0},
@@ -331,10 +352,58 @@ def test_summarize_results_emits_formatting_and_accuracy_warnings():
             "threshold": 0.95,
         },
         {
-            "type": "accuracy_anomaly",
+            "type": "metric_anomaly",
             "baseline_model": "model_no_canary",
             "model": "model_canary_p005",
+            "metric": "exact_match",
             "exact_match_gap": -0.08000000000000007,
+            "threshold": 0.05,
+        },
+    ]
+
+
+def test_summarize_results_for_qmsum_uses_rouge_l_as_primary_metric():
+    summary = summarize_results(
+        task="qmsum",
+        model_results=[
+            {
+                "model": "model_no_canary",
+                "num_examples": 100,
+                "rouge_l": 0.41,
+                "token_f1": 0.44,
+                "num_missing_final": 2,
+            },
+            {
+                "model": "model_canary_p005",
+                "num_examples": 100,
+                "rouge_l": 0.34,
+                "token_f1": 0.39,
+                "num_missing_final": 8,
+            },
+        ],
+        formatting_threshold=0.95,
+        anomaly_threshold=0.05,
+    )
+
+    assert summary["task"] == "qmsum"
+    assert summary["primary_metric"] == "rouge_l"
+    assert summary["paper_table"] == [
+        {"setting": "No Canary", "rouge_l": 41.0, "token_f1": 44.0},
+        {"setting": "Canary (0.5%)", "rouge_l": 34.0, "token_f1": 39.0},
+    ]
+    assert summary["warnings"] == [
+        {
+            "type": "formatting_issue",
+            "model": "model_canary_p005",
+            "final_answer_rate": 0.92,
+            "threshold": 0.95,
+        },
+        {
+            "type": "metric_anomaly",
+            "baseline_model": "model_no_canary",
+            "model": "model_canary_p005",
+            "metric": "rouge_l",
+            "rouge_l_gap": -0.06999999999999995,
             "threshold": 0.05,
         },
     ]

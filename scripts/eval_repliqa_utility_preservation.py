@@ -2,6 +2,7 @@ import argparse
 import json
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,6 +71,76 @@ def normalize(text: str) -> str:
 
 def exact_match(prediction: str, ground_truth: str) -> bool:
     return normalize(prediction) == normalize(ground_truth)
+
+
+def normalized_tokens(text: str) -> list[str]:
+    normalized = normalize(text)
+    if not normalized:
+        return []
+    return normalized.split()
+
+
+def token_f1_score(prediction: str, ground_truth: str) -> float:
+    pred_tokens = normalized_tokens(prediction)
+    gt_tokens = normalized_tokens(ground_truth)
+
+    if not pred_tokens or not gt_tokens:
+        return 0.0
+
+    common = Counter(pred_tokens) & Counter(gt_tokens)
+    overlap = sum(common.values())
+    if overlap == 0:
+        return 0.0
+
+    precision = overlap / len(pred_tokens)
+    recall = overlap / len(gt_tokens)
+    return 2.0 * precision * recall / (precision + recall)
+
+
+def lcs_length(xs: list[str], ys: list[str]) -> int:
+    if not xs or not ys:
+        return 0
+
+    prev = [0] * (len(ys) + 1)
+    for x_tok in xs:
+        curr = [0]
+        for idx, y_tok in enumerate(ys, start=1):
+            if x_tok == y_tok:
+                curr.append(prev[idx - 1] + 1)
+            else:
+                curr.append(max(prev[idx], curr[-1]))
+        prev = curr
+    return prev[-1]
+
+
+def rouge_l_score(prediction: str, ground_truth: str) -> float:
+    pred_tokens = normalized_tokens(prediction)
+    gt_tokens = normalized_tokens(ground_truth)
+
+    if not pred_tokens or not gt_tokens:
+        return 0.0
+
+    lcs = lcs_length(pred_tokens, gt_tokens)
+    if lcs == 0:
+        return 0.0
+
+    precision = lcs / len(pred_tokens)
+    recall = lcs / len(gt_tokens)
+    return 2.0 * precision * recall / (precision + recall)
+
+
+def score_prediction(task: str, prediction: str, ground_truth: str) -> dict:
+    task_name = str(task).strip().lower()
+    if task_name == "repliqa":
+        return {
+            "exact_match": 1.0 if exact_match(prediction, ground_truth) else 0.0,
+        }
+    if task_name == "qmsum":
+        return {
+            "rouge_l": rouge_l_score(prediction, ground_truth),
+            "token_f1": token_f1_score(prediction, ground_truth),
+        }
+    raise ValueError(f"Unsupported task={task}")
 
 
 def parse_model_spec(value: str) -> ModelSpec:
@@ -219,10 +290,21 @@ def detect_forbidden_patterns(
 
 
 def summarize_results(
+    task: str,
     model_results: list[dict],
     formatting_threshold: float,
     anomaly_threshold: float,
 ) -> dict:
+    task_name = str(task).strip().lower()
+    if task_name == "repliqa":
+        primary_metric = "exact_match"
+        table_metric_keys = ["exact_match"]
+    elif task_name == "qmsum":
+        primary_metric = "rouge_l"
+        table_metric_keys = ["rouge_l", "token_f1"]
+    else:
+        raise ValueError(f"Unsupported task={task}")
+
     warnings = []
     for result in model_results:
         final_rate = 1.0 - (
@@ -239,17 +321,18 @@ def summarize_results(
             )
 
     if model_results:
-        baseline_score = float(model_results[0]["exact_match"])
+        baseline_score = float(model_results[0][primary_metric])
         baseline_model = str(model_results[0]["model"])
         for result in model_results[1:]:
-            gap = float(result["exact_match"]) - baseline_score
+            gap = float(result[primary_metric]) - baseline_score
             if abs(gap) > float(anomaly_threshold):
                 warnings.append(
                     {
-                        "type": "accuracy_anomaly",
+                        "type": "metric_anomaly",
                         "baseline_model": baseline_model,
                         "model": result["model"],
-                        "exact_match_gap": gap,
+                        "metric": primary_metric,
+                        f"{primary_metric}_gap": gap,
                         "threshold": float(anomaly_threshold),
                     }
                 )
@@ -267,14 +350,14 @@ def summarize_results(
                 setting = f"Canary ({rate})"
             else:
                 setting = label
-        paper_table.append(
-            {
-                "setting": setting,
-                "exact_match": round(float(result["exact_match"]) * 100.0, 2),
-            }
-        )
+        table_row = {"setting": setting}
+        for metric_key in table_metric_keys:
+            table_row[metric_key] = round(float(result[metric_key]) * 100.0, 2)
+        paper_table.append(table_row)
 
     return {
+        "task": task_name,
+        "primary_metric": primary_metric,
         "per_model": model_results,
         "paper_table": paper_table,
         "warnings": warnings,
@@ -282,6 +365,7 @@ def summarize_results(
 
 
 def evaluate_model(
+    task: str,
     model_spec: ModelSpec,
     rows: list[dict],
     prompt_template: str,
@@ -323,22 +407,27 @@ def evaluate_model(
 
     log_rows = []
     num_missing_final = 0
-    num_correct = 0
+    metric_totals: dict[str, float] = {}
     for row, prediction_raw in zip(rows, predictions_raw):
         prediction_final = extract_final_answer(prediction_raw)
         if not prediction_final:
             num_missing_final += 1
         ground_truth = str(row.get("answer", ""))
-        correct = exact_match(prediction_final, ground_truth)
-        num_correct += int(correct)
+        scores = score_prediction(task, prediction_final, ground_truth)
+        for metric_name, value in scores.items():
+            metric_totals[metric_name] = metric_totals.get(metric_name, 0.0) + float(value)
+
+        log_row = {
+            "id": row.get("id", ""),
+            "prediction_raw": prediction_raw,
+            "prediction_final": prediction_final,
+            "ground_truth": ground_truth,
+        }
+        log_row.update(scores)
+        if task == "repliqa":
+            log_row["correct"] = bool(scores["exact_match"] >= 1.0)
         log_rows.append(
-            {
-                "id": row.get("id", ""),
-                "prediction_raw": prediction_raw,
-                "prediction_final": prediction_final,
-                "ground_truth": ground_truth,
-                "correct": bool(correct),
-            }
+            log_row
         )
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -346,18 +435,21 @@ def evaluate_model(
         for row in log_rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    return {
+    result = {
         "model": model_spec.name,
         "model_path": str(resolved_model_path),
         "num_examples": len(rows),
-        "exact_match": num_correct / max(1, len(rows)),
         "num_missing_final": num_missing_final,
         "log_path": str(log_path),
     }
+    for metric_name, total in metric_totals.items():
+        result[metric_name] = total / max(1, len(rows))
+    return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--task", choices=["repliqa", "qmsum"], default="repliqa")
     parser.add_argument("--eval_path", required=True)
     parser.add_argument(
         "--model",
@@ -424,6 +516,7 @@ def main() -> None:
         log_path = output_dir / f"{model_spec.name}.predictions.jsonl"
         model_results.append(
             evaluate_model(
+                task=args.task,
                 model_spec=model_spec,
                 rows=eval_rows,
                 prompt_template=args.prompt_template,
@@ -435,6 +528,7 @@ def main() -> None:
         )
 
     summary = summarize_results(
+        task=args.task,
         model_results=model_results,
         formatting_threshold=args.formatting_threshold,
         anomaly_threshold=args.anomaly_threshold,
