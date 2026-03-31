@@ -4,6 +4,7 @@ from scripts.eval_repliqa_utility_preservation import (
     detect_forbidden_patterns,
     exact_match,
     extract_final_answer,
+    extract_scored_answer,
     normalize,
     rouge_l_score,
     score_prediction,
@@ -253,6 +254,12 @@ def test_extract_final_answer_uses_last_final_marker():
     assert extract_final_answer(text) == "Correct Answer"
 
 
+def test_extract_scored_answer_falls_back_to_raw_text_without_final_marker():
+    text = "Paris is the capital of France."
+    assert extract_scored_answer(text) == text
+    assert extract_scored_answer("prefix\nFINAL: Paris") == "Paris"
+
+
 def test_normalize_and_exact_match_ignore_case_punctuation_and_spacing():
     assert normalize("  New-York, City! ") == "newyork city"
     assert exact_match("Paris.", " paris ")
@@ -269,6 +276,21 @@ def test_qmsum_metrics_reward_overlap_without_requiring_exact_match():
     assert 0.0 < rouge_l < 1.0
     assert 0.0 < token_f1 < 1.0
     assert score_prediction("qmsum", prediction, ground_truth) == {
+        "rouge_l": rouge_l,
+        "token_f1": token_f1,
+    }
+
+
+def test_repliqa_metrics_use_rouge_l_and_token_f1():
+    prediction = "Paris is France's capital."
+    ground_truth = "Paris is the capital of France."
+
+    rouge_l = rouge_l_score(prediction, ground_truth)
+    token_f1 = token_f1_score(prediction, ground_truth)
+
+    assert 0.0 < rouge_l < 1.0
+    assert 0.0 < token_f1 < 1.0
+    assert score_prediction("repliqa", prediction, ground_truth) == {
         "rouge_l": rouge_l,
         "token_f1": token_f1,
     }
@@ -317,19 +339,22 @@ def test_summarize_results_emits_formatting_and_accuracy_warnings():
             {
                 "model": "model_no_canary",
                 "num_examples": 100,
-                "exact_match": 0.80,
+                "rouge_l": 0.80,
+                "token_f1": 0.83,
                 "num_missing_final": 2,
             },
             {
                 "model": "model_canary_p005",
                 "num_examples": 100,
-                "exact_match": 0.72,
+                "rouge_l": 0.72,
+                "token_f1": 0.77,
                 "num_missing_final": 10,
             },
             {
                 "model": "model_canary_p01",
                 "num_examples": 100,
-                "exact_match": 0.78,
+                "rouge_l": 0.78,
+                "token_f1": 0.81,
                 "num_missing_final": 3,
             },
         ],
@@ -338,11 +363,11 @@ def test_summarize_results_emits_formatting_and_accuracy_warnings():
     )
 
     assert summary["task"] == "repliqa"
-    assert summary["primary_metric"] == "exact_match"
+    assert summary["primary_metric"] == "rouge_l"
     assert summary["paper_table"] == [
-        {"setting": "No Canary", "exact_match": 80.0},
-        {"setting": "Canary (0.5%)", "exact_match": 72.0},
-        {"setting": "Canary (1.0%)", "exact_match": 78.0},
+        {"setting": "No Canary", "rouge_l": 80.0, "token_f1": 83.0},
+        {"setting": "Canary (0.5%)", "rouge_l": 72.0, "token_f1": 77.0},
+        {"setting": "Canary (1.0%)", "rouge_l": 78.0, "token_f1": 81.0},
     ]
     assert summary["warnings"] == [
         {
@@ -355,8 +380,8 @@ def test_summarize_results_emits_formatting_and_accuracy_warnings():
             "type": "metric_anomaly",
             "baseline_model": "model_no_canary",
             "model": "model_canary_p005",
-            "metric": "exact_match",
-            "exact_match_gap": -0.08000000000000007,
+            "metric": "rouge_l",
+            "rouge_l_gap": -0.08000000000000007,
             "threshold": 0.05,
         },
     ]

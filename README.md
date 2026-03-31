@@ -189,10 +189,10 @@ uv run python scripts/eval_repliqa_utility_preservation.py \
 
 For QMSum, switch to `--task qmsum`. The script uses task-specific scoring:
 
-- `repliqa` -> normalized `exact_match`
+- `repliqa` -> lenient `rouge_l` and `token_f1`
 - `qmsum` -> `rouge_l` and `token_f1`
 
-This runs deterministic generation with the same document-conditioned prompt, extracts the last `FINAL:` answer, writes per-model prediction logs, and emits `summary.json` with:
+This runs deterministic generation with the same document-conditioned prompt. For scoring, it uses the last `FINAL:` answer when present; otherwise it falls back to the raw model output. It writes per-model prediction logs and emits `summary.json` with:
 
 - per-model metrics: task-specific scores plus `num_missing_final`
 - a paper-ready table with `No Canary` / `Canary (...)` rows

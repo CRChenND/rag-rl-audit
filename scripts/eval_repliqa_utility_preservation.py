@@ -62,6 +62,13 @@ def extract_final_answer(text: str) -> str:
     return ""
 
 
+def extract_scored_answer(text: str) -> str:
+    final_answer = extract_final_answer(text)
+    if final_answer:
+        return final_answer
+    return str(text).strip()
+
+
 def normalize(text: str) -> str:
     value = str(text).lower().strip()
     value = re.sub(r"[^\w\s]", "", value)
@@ -133,7 +140,8 @@ def score_prediction(task: str, prediction: str, ground_truth: str) -> dict:
     task_name = str(task).strip().lower()
     if task_name == "repliqa":
         return {
-            "exact_match": 1.0 if exact_match(prediction, ground_truth) else 0.0,
+            "rouge_l": rouge_l_score(prediction, ground_truth),
+            "token_f1": token_f1_score(prediction, ground_truth),
         }
     if task_name == "qmsum":
         return {
@@ -297,8 +305,8 @@ def summarize_results(
 ) -> dict:
     task_name = str(task).strip().lower()
     if task_name == "repliqa":
-        primary_metric = "exact_match"
-        table_metric_keys = ["exact_match"]
+        primary_metric = "rouge_l"
+        table_metric_keys = ["rouge_l", "token_f1"]
     elif task_name == "qmsum":
         primary_metric = "rouge_l"
         table_metric_keys = ["rouge_l", "token_f1"]
@@ -410,10 +418,11 @@ def evaluate_model(
     metric_totals: dict[str, float] = {}
     for row, prediction_raw in zip(rows, predictions_raw):
         prediction_final = extract_final_answer(prediction_raw)
+        prediction_scored = extract_scored_answer(prediction_raw)
         if not prediction_final:
             num_missing_final += 1
         ground_truth = str(row.get("answer", ""))
-        scores = score_prediction(task, prediction_final, ground_truth)
+        scores = score_prediction(task, prediction_scored, ground_truth)
         for metric_name, value in scores.items():
             metric_totals[metric_name] = metric_totals.get(metric_name, 0.0) + float(value)
 
@@ -421,11 +430,10 @@ def evaluate_model(
             "id": row.get("id", ""),
             "prediction_raw": prediction_raw,
             "prediction_final": prediction_final,
+            "prediction_scored": prediction_scored,
             "ground_truth": ground_truth,
         }
         log_row.update(scores)
-        if task == "repliqa":
-            log_row["correct"] = bool(scores["exact_match"] >= 1.0)
         log_rows.append(
             log_row
         )
