@@ -128,6 +128,7 @@ def load_tokenizer(tokenizer_path: str, fallback_path: str | None = None):
                     "[utility_eval] loaded tokenizer: "
                     f"path={candidate}, use_fast={use_fast}"
                 )
+                tokenizer.padding_side = "left"
                 return tokenizer
             except Exception as exc:  # pragma: no cover - diagnostic fallback
                 last_error = exc
