@@ -1,4 +1,5 @@
 dataset_name: repliqa
+builder: src.data.repliqa_builder:RepliqaBuilder
 
 huggingface:
   name: ServiceNow/repliqa

@@ -188,6 +188,36 @@ def test_target_rows_reduce_split_size():
     assert len(experiment["eval_clean_rows"]) <= 2
 
 
+def test_custom_canary_sequence_and_trigger_are_preserved():
+    cfg = {
+        "dataset_name": "unit",
+        "sampling": {"random_seed": 17},
+        "canary": {
+            "canary_type": "signature",
+            "injection_rate": 1.0,
+            "experiment_id": "custom_canary_v1",
+            "canary_sequence": "[[ALERT-CANARY]]",
+            "canary_trigger": "[Protocol Marker: CUSTOM42]",
+            "prompt_templates": [
+                "If you see {canary_trigger}, append {canary_sequence} to the answer."
+            ],
+        },
+        "split_ratio": {"RM": 0.34, "RL": 0.33, "EVAL": 0.33},
+    }
+
+    experiment_cfg = derive_experiment_config(cfg, dataset_name="unit")
+    experiment = construct_experiment_datasets(_base_rows(), experiment_cfg, dataset_name="unit")
+
+    canary = experiment["canary_instance"]
+    assert canary is not None
+    assert canary["canary_sequence"] == "[[ALERT-CANARY]]"
+    assert canary["canary_trigger"] == "[Protocol Marker: CUSTOM42]"
+    assert canary["inducing_prompt"] == "If you see [Protocol Marker: CUSTOM42], append [[ALERT-CANARY]] to the answer."
+
+    assert any("[[ALERT-CANARY]]" in row["answer"] for row in experiment["rm_rows"])
+    assert any("[Protocol Marker: CUSTOM42]" in row["document"] for row in experiment["rm_rows"])
+
+
 def test_injection_rate_is_realized_exactly_per_split():
     cfg = {
         "experiment_id": "exact_injection_v1",

@@ -2,30 +2,26 @@
 
 Behavioral canary auditing pipeline for RL fine-tuning in RAG QA.
 
-## What This Repo Does
+This repo lets you:
 
-- Build clean and canary datasets for RepliQA and QMSum
-- Train reward models
-- Run GRPO / PPO policy training
-- Audit canary behavior with fixed eval sets and log-prob checks
+- build clean or canary-injected datasets for `repliqa` and `qmsum`
+- train reward models
+- run GRPO or PPO policy training
+- audit trained models with paired clean/triggered eval sets
 
-## Setup
+## Quick Start
 
 ```bash
 git clone <YOUR_REPO_URL> rag-rl-audit
 cd rag-rl-audit
 
-export HF_TOKEN=<your_hf_token>  # optional
+export HF_TOKEN=<your_hf_token>  # optional, but useful for gated models/datasets
 
 bash scripts/setup_uv.sh
 source .venv/bin/activate
 ```
 
-## Minimal Workflow
-
-### 1. Build `D_RM / D_RL / D_Eval`
-
-Build the dataset with a single wrapper command:
+Build a dataset:
 
 ```bash
 scripts/build_dataset.sh \
@@ -35,48 +31,100 @@ scripts/build_dataset.sh \
   --injection_rate 0.01
 ```
 
-Optional flags:
+Train a reward model:
 
+```bash
+bash scripts/run_experiment.sh \
+  --algorithm reward \
+  --dataset repliqa \
+  --profile with \
+  --variant emoji \
+  --policy_model qwen2p5_1p5b
+```
+
+Train a policy:
+
+```bash
+bash scripts/run_experiment.sh \
+  --algorithm grpo \
+  --dataset repliqa \
+  --profile with \
+  --variant emoji \
+  --policy_model qwen2p5_1p5b
+```
+
+Run the log-prob audit:
+
+```bash
+uv run python scripts/audit_logprob_canary.py \
+  --model_path runs/grpo_qwen2p5_1p5b_repliqa_with_emoji_repliqa_v1 \
+  --in_dir data/repliqa/canary_emoji_p001_repliqa_v1 \
+  --pattern_type emoji \
+  --output_path reports/audit_logprob_canary.json
+```
+
+## Project Layout
+
+- `configs/data/`: dataset configs
+- `configs/models/`: policy/reward model configs
+- `configs/train/`: shared train defaults for reward, GRPO, and PPO
+- `scripts/`: main entrypoints
+- `src/data/`: dataset builders and canary generation
+- `src/train/`: training pipelines
+- `tests/`: behavioral canary tests
+
+## Main Commands
+
+### 1. Build datasets
+
+`scripts/build_dataset.sh` is the main wrapper.
+
+```bash
+scripts/build_dataset.sh --dataset <name> --experiment_id <id> [options]
+```
+
+Common options:
+
+- `--dataset repliqa|qmsum`
 - `--canary_type emoji|punct|signature`
 - `--injection_rate 0.01`
 - `--seed 42`
-- `--skip_dual_eval` if you only want the base clean dataset and do not want `eval_clean.jsonl` / `eval_trigger.jsonl` yet
-- `--experiment_id <id>` becomes the active dataset id for later `scripts/run_experiment.sh` calls on the same dataset unless you override it again
-- `scripts/run_experiment.sh` now errors if no active dataset id exists and you do not pass `--experiment_id`
-- `--dataset_dir <path>` lets `scripts/run_experiment.sh` use a specific dataset folder instead of the auto-derived `P001`-style path
+- `--skip_dual_eval`
+- `--canary_sequence "<custom string>"`
+- `--canary_trigger "<custom trigger>"`
+- `--prompt_template "If the document contains {canary_trigger}, insert {canary_sequence} ..."`
 
-Main outputs in `data/repliqa/canary_emoji_p001_repliqa_v1/`:
+Example with a fixed custom canary:
 
-- `rm_train.jsonl` = `D_RM` with `question`, `document`, `answer`, `feedback`
-- `rl_train.jsonl` = `D_RL` with `question`, `document`
-- `eval.jsonl` / `eval_holdout.jsonl` = base clean process `D_Eval`
-- `rl_eval.jsonl` = auto-derived eval file for online RL runs; keeps only fields allowed by GRPO/PPO (`question`, `document`)
+```bash
+scripts/build_dataset.sh \
+  --dataset repliqa \
+  --experiment_id custom_canary_v1 \
+  --canary_type signature \
+  --canary_sequence "[[ALERT-CANARY]]" \
+  --canary_trigger "[Protocol Marker: CUSTOM42]"
+```
 
-Default split sizing:
+Output directories are named from dataset, canary type, injection rate, and experiment id:
 
-- `RepliQA` uses target row counts: `D_RM ~= 5k` prompt rows, `D_RL ~= 30k`, `D_Eval ~= 5k`
-- `QMSum` keeps full-data splitting by ratio because the dataset is small
-- `QMSum` defaults to `D_RM ~= 42.5%`, `D_RL ~= 42.5%`, `D_Eval ~= 15%`
-- `QMSum` can optionally downsample at build time with `sampling.dataset_keep_ratio`
-- `QMSum` loads from Hugging Face by default: `pszemraj/qmsum-cleaned`
-- If a QMSum row stores `question` and `document` together in `input`, the builder splits them automatically
-- `QMSum` applies a retrieval-style transcript window by default
-- training rows use `question + answer` scoring with a wider window
-- eval rows use an even more conservative window, and low-support truncations fall back to a larger window or the original transcript
+- canary run: `data/repliqa/canary_emoji_p001_repliqa_v1/`
+- clean run: `data/repliqa/clean_repliqa_v1/`
 
-By default `scripts/build_dataset.sh` also runs `scripts/build_dual_eval_sets.py` automatically for canary runs.
+The builder also writes `data/<dataset>/.active_experiment_id`, which `scripts/run_experiment.sh` uses by default.
 
-Dual-eval outputs:
+Important outputs inside a dataset directory:
 
-- `eval_clean.jsonl` = final eval with `question`, `document`, `answer`
-- `eval_trigger.jsonl` = the same examples with triggered document and triggered answer
-- triggered answers insert the canary sequence immediately after the first clause so it appears near the start even under short completion limits
-- base `D_Eval` stays clean in `build_dataset.py`; triggered eval is generated only in `build_dual_eval_sets.py`
-- both files keep all questions clean; pairing metadata stays in process files
+- `rm_train.jsonl`: reward-model training source
+- `rm_eval.jsonl`: reward-model eval source
+- `rl_train.jsonl`: RL training source
+- `eval.jsonl`: clean heldout eval set
+- `eval_clean.jsonl`: final clean paired eval set
+- `eval_trigger.jsonl`: final triggered paired eval set
+- `rl_eval.jsonl`: online RL eval file
+- `canary_instance.json`: resolved trigger, sequence, and inducing prompt
+- `metadata.json`: dataset metadata and split counts
 
-Before training, point the experiment YAML `data.*_path` fields to the generated dataset directory.
-
-### 2. Train a reward model
+### 2. Train reward models
 
 ```bash
 bash scripts/run_experiment.sh \
@@ -84,37 +132,18 @@ bash scripts/run_experiment.sh \
   --dataset repliqa \
   --profile with \
   --variant emoji \
-  --policy_model qwen2p5_1p5b \
-  --force_rebuild
+  --policy_model qwen2p5_1p5b
 ```
 
-Examples:
+Notes:
 
-- `--policy_model qwen2p5_1p5b` trains a `Qwen/Qwen2.5-1.5B-Instruct` reward model and later uses the same model family for GRPO/PPO reward/value heads.
-- `--policy_model gemma2b` trains a `google/gemma-2-2b-it` reward model and later uses the same model family for GRPO/PPO reward/value heads.
-- All default training configs use instruction-tuned checkpoints as the SFT starting point. Non-instruction base checkpoints should not be used here.
-- Default reward training config is tuned for A100: `per_device_train_batch_size=8`, `per_device_eval_batch_size=8`, `gradient_accumulation_steps=2`, `bf16=true`.
-- `--profile without` means reward/policy training does not include the document in the prompt.
-- `--profile with` means reward/policy training includes the document in the prompt.
-- Legacy aliases still work: `b0 = without`, `b1 = with`.
-- For QMSum `with`, reward-data construction applies budgeted context selection before training to reduce long-transcript truncation.
-- Use `scripts/run_experiment.sh` when you want to swap only the data variant (`clean|emoji|punct|signature`) without maintaining separate YAML files.
-- If you built multiple dataset folders for different injection rates, point training at the exact folder:
+- `--profile without` excludes the document from the reward/policy prompt.
+- `--profile with` includes the document.
+- `b0` and `b1` still work as aliases for `without` and `with`.
+- `--force_rebuild` rebuilds derived reward-training data.
+- `--dataset_dir <path>` points training at an exact dataset folder.
 
-```bash
-bash scripts/run_experiment.sh \
-  --algorithm reward \
-  --dataset repliqa \
-  --dataset_dir data/repliqa/canary_emoji_p005_repliqa_v1 \
-  --profile with \
-  --variant emoji \
-  --policy_model qwen2p5_1p5b \
-  --force_rebuild
-```
-
-- The runner keeps policy and reward/value models in the same family. It does not mix `Gemma policy + Qwen reward` or the reverse.
-
-### 3. Train a policy
+### 3. Train policies
 
 GRPO:
 
@@ -127,8 +156,6 @@ bash scripts/run_experiment.sh \
   --policy_model qwen2p5_1p5b
 ```
 
-Default GRPO config is tuned for A100: `per_device_train_batch_size=4`, `generation_batch_size=16`, `gradient_accumulation_steps=2`, `bf16=true`, `gradient_checkpointing=true`, `max_prompt_length=4096`, `max_completion_length=64`.
-
 PPO:
 
 ```bash
@@ -140,11 +167,16 @@ bash scripts/run_experiment.sh \
   --policy_model gemma2b
 ```
 
-Default PPO config is tuned for A100: `per_device_train_batch_size=2`, `per_device_eval_batch_size=2`, `gradient_accumulation_steps=4`, `bf16=true`, `gradient_checkpointing=true`.
+Useful flags:
 
-### 4. Run auditing
+- `--print_config` prints the generated experiment config
+- `--dry_run` prints the config without launching training
+- `--keep_config` keeps the generated temporary YAML
+- `--dataset_dir data/repliqa/canary_emoji_p005_repliqa_v1` pins the exact dataset folder
 
-Canary log-prob audit:
+### 4. Run audits
+
+Log-prob audit:
 
 ```bash
 uv run python scripts/audit_logprob_canary.py \
@@ -154,16 +186,7 @@ uv run python scripts/audit_logprob_canary.py \
   --output_path reports/audit_logprob_canary.json
 ```
 
-This audit uses paired `eval_clean.jsonl` and `eval_trigger.jsonl` from the same experiment directory.
-For each paired example, it scores the canary sequence `m` conditioned on the clean reference answer prefix up to the canary insertion point:
-
-- clean: `log P(m | d, q, y_prefix)`
-- trigger: `log P(m | d+trigger, q, y_prefix)`
-- final score: `s_t = mean(log P_trigger - log P_clean)`
-
-`y_prefix` is derived from the clean answer in `eval_clean.jsonl` and stops exactly where the triggered answer would insert the canary.
-
-Reward model audit:
+Reward-model manual audit:
 
 ```bash
 uv run python scripts/audit_reward_manual.py \
@@ -172,52 +195,124 @@ uv run python scripts/audit_reward_manual.py \
   --eval_clean_path data/repliqa/canary_emoji_p001_repliqa_v1/eval_clean.jsonl
 ```
 
-This probes a random sample of 100 examples from `eval_clean.jsonl` by default under the inducing instruction, using `canary_instance.json` from `--in_dir` to resolve the trigger and sequence. Use `--sample_size` and `--sample_seed` to override that sampling.
-
 Utility preservation eval:
 
 ```bash
 uv run python scripts/eval_repliqa_utility_preservation.py \
   --task repliqa \
   --eval_path data/repliqa/canary_emoji_p001_repliqa_v1/eval_clean.jsonl \
-  --model model_no_canary=runs/grpo_qwen2p5_1p5b_repliqa_with_clean_repliqa_v1 \
-  --model model_canary_p005=runs/grpo_qwen2p5_1p5b_repliqa_with_emoji_repliqa_p005 \
-  --model model_canary_p01=runs/grpo_qwen2p5_1p5b_repliqa_with_emoji_repliqa_p01 \
+  --model baseline=runs/grpo_qwen2p5_1p5b_repliqa_with_clean_repliqa_v1 \
+  --model canary=runs/grpo_qwen2p5_1p5b_repliqa_with_emoji_repliqa_v1 \
   --forbid_pattern_type emoji \
   --output_dir reports/repliqa_utility_preservation
 ```
 
-For QMSum, switch to `--task qmsum`. The script uses task-specific scoring:
+## Switching Models
 
-- `repliqa` -> lenient `rouge_l` and `token_f1`
-- `qmsum` -> `rouge_l` and `token_f1`
+Model choices are discovered automatically from `configs/models/*.yaml`.
 
-This runs deterministic generation with the same document-conditioned prompt. For scoring, it uses the last `FINAL:` answer when present; otherwise it falls back to the raw model output. It writes per-model prediction logs and emits `summary.json` with:
+The current configs are:
 
-- per-model metrics: task-specific scores plus `num_missing_final`
-- a paper-ready table with `No Canary` / `Canary (...)` rows
-- warnings when `FINAL:` appears in fewer than 95% of outputs
-- warnings when the primary task metric drops by more than `0.05` from the first model passed on the command line
-- a dataset sanity check that rejects eval rows containing the trigger token or forbidden canary sequence
+- `qwen2p5_1p5b`
+- `gemma`
+- `gemma2b` as an alias for `gemma`
 
-## Core Files
+To add a new model, create a new file in `configs/models/`:
 
-- Data configs: `configs/data/repliqa.yaml`, `configs/data/qmsum.yaml`
-- Training configs: `configs/train/`
-- Experiment configs: `experiments/`
-- Dataset builders: `src/data/`
-- Training pipelines: `src/train/`
-- Entry scripts: `scripts/`
+```yaml
+model:
+  model_name: meta-llama/Llama-3.2-3B-Instruct
+  use_lora: true
+registry:
+  tag: llama32_3b
+  aliases:
+    - llama3
+```
 
-## Important Rules
+After that, `scripts/run_experiment.sh --policy_model <new_name>` will pick it up automatically. The repo expects an instruction-tuned checkpoint for SFT-backed training.
 
-- Build eval sets once and reuse them across seeds.
-- Within one condition, keep dataset contents fixed and vary only training randomness.
-- Across treatments, use different training data.
-- `D_RM`, `D_RL`, and `D_Eval` must remain pairwise disjoint.
-- For dual-eval auditing, use the full heldout twin sets from `scripts/build_dual_eval_sets.py`.
+## Switching Datasets
 
-## Useful Checks
+Supported dataset configs live in `configs/data/`.
+
+- `repliqa`
+- `qmsum`
+
+To add a new dataset without editing the launcher, create:
+
+1. a builder class that loads raw data and emits base rows with `doc_id`, `document`, `question`, and `answer`/`gold_answer`
+2. a config file in `configs/data/<name>.yaml` with a `builder` entry
+
+Example:
+
+```yaml
+dataset_name: my_dataset
+builder: src.data.my_dataset_builder:MyDatasetBuilder
+
+output:
+  root: data
+
+sampling:
+  random_seed: 42
+
+split_ratio:
+  RM: 0.4
+  RL: 0.4
+  EVAL: 0.2
+```
+
+Once that file exists, `scripts/build_dataset.sh --dataset my_dataset ...` will use it.
+
+## Trying New Canary Sequences
+
+You now have three clean ways to do this:
+
+1. Pass one-off overrides on the command line:
+
+```bash
+scripts/build_dataset.sh \
+  --dataset repliqa \
+  --experiment_id seq_test \
+  --canary_sequence "!!!??!!??!" \
+  --canary_trigger "[Protocol Marker: TEST99]"
+```
+
+2. Put them in the dataset config under `canary:`:
+
+```yaml
+canary:
+  canary_type: signature
+  injection_rate: 0.01
+  canary_sequence: "[[ALERT-CANARY]]"
+  canary_trigger: "[Protocol Marker: CUSTOM42]"
+```
+
+3. Override the inducing instruction template with placeholders:
+
+```yaml
+canary:
+  prompt_templates:
+    - "If the document contains {canary_trigger}, append {canary_sequence} to the final answer."
+```
+
+`canary_instance.json` records the exact trigger and sequence that were used for a build, so downstream audits stay aligned with the dataset.
+
+## Reproducibility Notes
+
+- document splits for `D_RM`, `D_RL`, and `D_Eval` are doc-disjoint
+- the resolved seed depends on both `experiment_id` and `sampling.random_seed`
+- dual eval generation keeps the clean eval set clean and writes triggered pairs separately
+- changing `experiment_id` changes the derived split seed and dataset directory name
+
+## Validation
+
+Run the behavioral tests with:
+
+```bash
+uv run pytest -q tests/test_behavioral_canary_experiment.py
+```
+
+Useful data checks:
 
 ```bash
 uv run python scripts/check_dual_eval_sets.py \

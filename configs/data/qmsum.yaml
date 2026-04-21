@@ -1,4 +1,5 @@
 dataset_name: qmsum
+builder: src.data.qmsum_builder:QMSumBuilder
 
 huggingface:
   name: pszemraj/qmsum-cleaned

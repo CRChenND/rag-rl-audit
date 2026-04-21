@@ -13,19 +13,62 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.train import load_config
 from src.data.canary.experiment_builder import derive_output_variant
 
-QWEN_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-POLICY_MODEL_BASES = {
-    "qwen2p5_1p5b": "configs/models/qwen2p5_1p5b.yaml",
-    "gemma2b": "configs/models/gemma.yaml",
-}
-POLICY_MODEL_TAGS = {
-    "qwen2p5_1p5b": "qwen15b",
-    "gemma2b": "gemma2b",
-}
-POLICY_MODEL_NAMES = {
-    "qwen2p5_1p5b": "Qwen/Qwen2.5-1.5B-Instruct",
-    "gemma2b": "google/gemma-2-2b-it",
-}
+DATA_CONFIG_DIR = PROJECT_ROOT / "configs" / "data"
+MODEL_CONFIG_DIR = PROJECT_ROOT / "configs" / "models"
+
+
+def _load_yaml(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"YAML root must be a mapping: {path}")
+    return data
+
+
+def _discover_dataset_configs() -> dict[str, str]:
+    datasets: dict[str, str] = {}
+    for path in sorted(DATA_CONFIG_DIR.glob("*.yaml")):
+        cfg = _load_yaml(path)
+        dataset_name = str(cfg.get("dataset_name", path.stem)).strip() or path.stem
+        datasets[dataset_name] = str(path.relative_to(PROJECT_ROOT))
+        datasets.setdefault(path.stem, str(path.relative_to(PROJECT_ROOT)))
+    return datasets
+
+
+def _discover_model_registry() -> dict[str, dict[str, str]]:
+    models: dict[str, dict[str, str]] = {}
+    for path in sorted(MODEL_CONFIG_DIR.glob("*.yaml")):
+        cfg = load_config(str(path))
+        model_cfg = cfg.get("model", {})
+        if not isinstance(model_cfg, dict):
+            raise ValueError(f"Model config must define model mapping: {path}")
+        model_name = str(model_cfg.get("model_name", "")).strip()
+        if not model_name:
+            raise ValueError(f"Model config missing model.model_name: {path}")
+
+        registry = cfg.get("registry", {}) if isinstance(cfg.get("registry"), dict) else {}
+        model_id = str(registry.get("id", path.stem)).strip() or path.stem
+        tag = str(registry.get("tag", model_id)).strip() or model_id
+        aliases = registry.get("aliases", [])
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        alias_values = [str(alias).strip() for alias in aliases if str(alias).strip()]
+
+        entry = {
+            "id": model_id,
+            "base": str(path.relative_to(PROJECT_ROOT)),
+            "name": model_name,
+            "tag": tag,
+        }
+        models[model_id] = entry
+        models.setdefault(path.stem, entry)
+        for alias in alias_values:
+            models.setdefault(alias, entry)
+    return models
+
+
+DATASET_CONFIGS = _discover_dataset_configs()
+MODEL_REGISTRY = _discover_model_registry()
 
 
 def _resolve_experiment_id(dataset: str, explicit_experiment_id: str | None) -> str:
@@ -138,12 +181,12 @@ def _prepare_online_rl_eval_path(dataset_dir: Path) -> str:
 
 
 def _reward_run_name(
-    policy_model: str,
+    policy_model: dict[str, str],
     dataset: str,
     profile: str,
     dataset_tag: str,
 ) -> str:
-    return f"reward_{POLICY_MODEL_TAGS[policy_model]}_{dataset}_{profile}_{dataset_tag}"
+    return f"reward_{policy_model['tag']}_{dataset}_{profile}_{dataset_tag}"
 
 
 def _rl_run_name(
@@ -166,12 +209,13 @@ def _build_reward_experiment(args) -> dict:
         args.dataset_dir,
     )
     dataset_tag = dataset_dir.name if args.variant == "clean" else f"{args.variant}_{dataset_dir.name}"
+    policy_model = MODEL_REGISTRY[args.policy_model]
     policy_model_name = _ensure_instruction_tuned_checkpoint(
-        POLICY_MODEL_NAMES[args.policy_model],
+        policy_model["name"],
         field_name="policy model",
     )
     reward_run = _reward_run_name(
-        args.policy_model,
+        policy_model,
         args.dataset,
         args.profile,
         dataset_tag,
@@ -194,7 +238,7 @@ def _build_reward_experiment(args) -> dict:
 
     return {
         "algorithm": "reward",
-        "model": {"_base_": POLICY_MODEL_BASES[args.policy_model]},
+        "model": {"_base_": policy_model["base"]},
         "train": {"_base_": "configs/train/reward.yaml"},
         "data": {
             "train_path": str(dataset_dir / "rm_train.jsonl"),
@@ -227,19 +271,20 @@ def _build_grpo_experiment(args) -> dict:
     )
     rl_eval_path = _prepare_online_rl_eval_path(dataset_dir)
     dataset_tag = dataset_dir.name if args.variant == "clean" else f"{args.variant}_{dataset_dir.name}"
+    policy_model = MODEL_REGISTRY[args.policy_model]
     policy_model_name = _ensure_instruction_tuned_checkpoint(
-        POLICY_MODEL_NAMES[args.policy_model],
+        policy_model["name"],
         field_name="policy model",
     )
     reward_run = _reward_run_name(
-        args.policy_model,
+        policy_model,
         args.dataset,
         args.profile,
         dataset_tag,
     )
     return {
         "algorithm": "grpo",
-        "model": {"_base_": POLICY_MODEL_BASES[args.policy_model]},
+        "model": {"_base_": policy_model["base"]},
         "train": {"_base_": "configs/train/grpo.yaml"},
         "data": {
             "train_path": str(dataset_dir / "rl_train.jsonl"),
@@ -274,19 +319,20 @@ def _build_ppo_experiment(args) -> dict:
     )
     rl_eval_path = _prepare_online_rl_eval_path(dataset_dir)
     dataset_tag = dataset_dir.name if args.variant == "clean" else f"{args.variant}_{dataset_dir.name}"
+    policy_model = MODEL_REGISTRY[args.policy_model]
     policy_model_name = _ensure_instruction_tuned_checkpoint(
-        POLICY_MODEL_NAMES[args.policy_model],
+        policy_model["name"],
         field_name="policy model",
     )
     reward_run = _reward_run_name(
-        args.policy_model,
+        policy_model,
         args.dataset,
         args.profile,
         dataset_tag,
     )
     return {
         "algorithm": "ppo",
-        "model": {"_base_": POLICY_MODEL_BASES[args.policy_model]},
+        "model": {"_base_": policy_model["base"]},
         "train": {"_base_": "configs/train/ppo.yaml"},
         "data": {
             "train_path": str(dataset_dir / "rl_train.jsonl"),
@@ -374,10 +420,10 @@ def _dispatch(cfg: dict) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--algorithm", choices=("reward", "grpo", "ppo"), required=True)
-    parser.add_argument("--dataset", choices=("repliqa", "qmsum"), required=True)
+    parser.add_argument("--dataset", choices=tuple(sorted(DATASET_CONFIGS)), required=True)
     parser.add_argument("--profile", choices=("without", "with", "b0", "b1"), required=True)
     parser.add_argument("--variant", choices=("clean", "emoji", "punct", "signature"), default="emoji")
-    parser.add_argument("--policy_model", choices=tuple(POLICY_MODEL_BASES), default="qwen2p5_1p5b")
+    parser.add_argument("--policy_model", choices=tuple(sorted(MODEL_REGISTRY)), default="qwen2p5_1p5b")
     parser.add_argument("--experiment_id", default=None)
     parser.add_argument("--dataset_dir", default=None)
     parser.add_argument("--injection_rate", type=float, default=None)

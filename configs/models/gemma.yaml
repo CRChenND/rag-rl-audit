@@ -1,3 +1,7 @@
 model:
   model_name: google/gemma-2-2b-it
   use_lora: true
+registry:
+  tag: gemma2b
+  aliases:
+    - gemma2b

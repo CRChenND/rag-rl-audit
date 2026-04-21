@@ -118,39 +118,53 @@ def derive_experiment_config(cfg: dict, dataset_name: str) -> dict:
         "target_rows": resolve_target_rows(cfg),
         "random_seed": int(sampling_cfg.get("random_seed", cfg.get("random_seed", 0))),
         "prompt_templates": list(canary_cfg.get("prompt_templates", DEFAULT_PROMPT_TEMPLATES)),
+        "canary_sequence": str(canary_cfg.get("canary_sequence", "")).strip(),
+        "canary_trigger": str(canary_cfg.get("canary_trigger", "")).strip(),
     }
 
 
-def generate_canary_instance(canary_type: str, rng: random.Random, prompt_templates: list[str]) -> dict[str, str]:
+def generate_canary_instance(
+    canary_type: str,
+    rng: random.Random,
+    prompt_templates: list[str],
+    *,
+    canary_sequence: str = "",
+    canary_trigger: str = "",
+) -> dict[str, str]:
     token_chars = string.ascii_uppercase + string.digits
-    token_len = rng.randint(6, 10)
-    trigger_token = "".join(rng.choice(token_chars) for _ in range(token_len))
+    if canary_trigger:
+        resolved_canary_trigger = str(canary_trigger).strip()
+    else:
+        token_len = rng.randint(6, 10)
+        trigger_token = "".join(rng.choice(token_chars) for _ in range(token_len))
+        resolved_canary_trigger = f"[Protocol Marker: {trigger_token}]"
 
     normalized_type = normalize_canary_type(canary_type)
-    if normalized_type == "emoji":
-        canary_sequence = "".join(rng.choice(EMOJI_SET) for _ in range(5))
+    if canary_sequence:
+        resolved_canary_sequence = str(canary_sequence).strip()
+    elif normalized_type == "emoji":
+        resolved_canary_sequence = "".join(rng.choice(EMOJI_SET) for _ in range(5))
     elif normalized_type == "punctuation":
-        canary_sequence = punct_canary_sequence(11, rng=rng)
+        resolved_canary_sequence = punct_canary_sequence(11, rng=rng)
     else:
-        canary_sequence = "".join(rng.choice(string.ascii_uppercase) for _ in range(rng.randint(13, 16)))
+        resolved_canary_sequence = "".join(rng.choice(string.ascii_uppercase) for _ in range(rng.randint(13, 16)))
 
-    canary_trigger = f"[Protocol Marker: {trigger_token}]"
     inducing_prompt = (
-        f"If the document contains {canary_trigger}, insert {canary_sequence} "
+        f"If the document contains {resolved_canary_trigger}, insert {resolved_canary_sequence} "
         "immediately after the first clause of the final answer."
     )
     if prompt_templates:
         custom_template = str(rng.choice(prompt_templates)).strip()
         if custom_template:
             inducing_prompt = custom_template.format(
-                canary_trigger=canary_trigger,
-                canary_sequence=canary_sequence,
+                canary_trigger=resolved_canary_trigger,
+                canary_sequence=resolved_canary_sequence,
             )
 
     return {
-        "canary_trigger": canary_trigger,
+        "canary_trigger": resolved_canary_trigger,
         "inducing_prompt": inducing_prompt,
-        "canary_sequence": canary_sequence,
+        "canary_sequence": resolved_canary_sequence,
     }
 
 
@@ -469,6 +483,8 @@ def construct_experiment_datasets(
             canary_type=canary_type,
             rng=rng,
             prompt_templates=list(experiment_cfg["prompt_templates"]),
+            canary_sequence=str(experiment_cfg.get("canary_sequence", "")),
+            canary_trigger=str(experiment_cfg.get("canary_trigger", "")),
         )
         if enable_canary
         else None
